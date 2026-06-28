@@ -1,10 +1,15 @@
 {
-  "name": "backend",
+  "name": "uacc-dims-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "UACC DIMS Backend API",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "seed": "node prisma/seed.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   },
   "repository": {
     "type": "git",
