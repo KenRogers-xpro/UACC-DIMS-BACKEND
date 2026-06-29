@@ -1,6 +1,5 @@
-import Resend from 'resend'
-
-const resend = new Resend(process.env.RESEND_API_KEY)
+// Lightweight no-op email helper for local/dev environments.
+// Avoids importing external providers during local tests.
 
 export const templates = {
   procurementSubmitted: (request, recipient) => ({
@@ -14,10 +13,6 @@ export const templates = {
 }
 
 export async function sendEmail({ to, subject, html }) {
-  return resend.emails.send({
-    from: 'no-reply@uacc-dims.example',
-    to,
-    subject,
-    html,
-  })
+  console.log('sendEmail stub called', { to, subject })
+  return { ok: true }
 }

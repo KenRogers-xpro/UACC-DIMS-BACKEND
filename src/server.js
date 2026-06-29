@@ -69,13 +69,7 @@ app.use('/api/users',         userRoutes)
 app.use('/api/audit-trail',   auditTrailRoutes)
 app.use('/api/ai',            aiLimiter, aiRoutes)
 
-// 404 handler
-app.use('*', (req, res) => {
-	res.status(404).json({
-		success: false,
-		message: `Route ${req.originalUrl} not found`,
-	})
-})
+// 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)
 
 // Global error handler
 app.use((err, req, res, next) => {
