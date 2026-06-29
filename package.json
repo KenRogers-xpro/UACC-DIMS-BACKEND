@@ -18,7 +18,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/KenRogers-xpro/UACC-DIMS-BACKEND/issues"
   },
@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@prisma/client": "^7.8.0",
+    "@prisma/client": "^4.15.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.10.0",
     "compression": "^1.8.1",
@@ -44,7 +44,7 @@
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.1",
-    "prisma": "^7.8.0",
+    "prisma": "^4.15.0",
     "resend": "^6.16.0"
   }
 }
