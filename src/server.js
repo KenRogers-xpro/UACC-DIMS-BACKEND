@@ -4,7 +4,8 @@ import helmet         from 'helmet'
 import morgan         from 'morgan'
 import compression    from 'compression'
 import rateLimit      from 'express-rate-limit'
-import dotenv         from 'dotenv'
+
+import './lib/env.js'
 
 import authRoutes         from './routes/auth.routes.js'
 import documentRoutes     from './routes/documents.routes.js'
@@ -17,8 +18,6 @@ import userRoutes         from './routes/users.routes.js'
 import auditTrailRoutes   from './routes/auditTrail.routes.js'
 import paRoutes           from './routes/pa.routes.js'
 import aiRoutes           from './routes/ai.routes.js'
-
-dotenv.config()
 
 const app  = express()
 const PORT = process.env.PORT || 5000

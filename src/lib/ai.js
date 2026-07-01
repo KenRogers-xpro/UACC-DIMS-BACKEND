@@ -1,3 +1,5 @@
+import './env.js'
+
 import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from '@google/generative-ai'
 import dotenv from 'dotenv'
 
