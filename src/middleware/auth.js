@@ -39,10 +39,12 @@ export async function authenticate(req, res, next) {
 
 export function authorize(...roles) {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    const allowedRoles = roles.length === 1 && Array.isArray(roles[0]) ? roles[0] : roles
+
+    if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: `Access denied. Required roles: ${roles.join(', ')}`,
+        message: `Access denied. Required roles: ${allowedRoles.join(', ')}`,
       })
     }
     next()

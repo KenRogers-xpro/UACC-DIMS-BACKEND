@@ -7,6 +7,17 @@ import { authenticate, authorize } from '../middleware/auth.js'
 
 const router = Router()
 
+async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENERAL_MANAGER' }) {
+  return prisma.documentRouting.create({
+    data: {
+      sourceType,
+      sourceId: String(sourceId),
+      addressedTo,
+      status: 'PENDING_TRIAGE',
+    },
+  })
+}
+
 // Generate procurement reference number
 async function generateProcurementRef() {
   const year   = new Date().getFullYear()
@@ -195,6 +206,12 @@ router.patch('/:id/decision', authenticate, async (req, res) => {
 
     // Notify GM if dept head approved
     if (req.user.role === 'DEPARTMENT_HEAD' && decision === 'APPROVED') {
+      await createPendingRouting({
+        sourceType: 'PROCUREMENT_REQUEST',
+        sourceId: request.id,
+        addressedTo: 'GENERAL_MANAGER',
+      })
+
       const gm = await prisma.user.findFirst({
         where: { role: 'GENERAL_MANAGER', isActive: true }
       })

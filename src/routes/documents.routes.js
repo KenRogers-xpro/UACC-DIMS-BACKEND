@@ -9,6 +9,17 @@ import multer from 'multer'
 const router  = Router()
 const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
 
+async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENERAL_MANAGER' }) {
+  return prisma.documentRouting.create({
+    data: {
+      sourceType,
+      sourceId: String(sourceId),
+      addressedTo,
+      status: 'PENDING_TRIAGE',
+    },
+  })
+}
+
 // GET /api/documents
 router.get('/', authenticate, async (req, res) => {
   try {
@@ -50,7 +61,7 @@ router.get('/', authenticate, async (req, res) => {
 // POST /api/documents
 router.post('/', authenticate, upload.single('file'), async (req, res) => {
   try {
-    const { title, category, department, description } = req.body
+    const { title, category, department, description, addressedTo, forGMAttention } = req.body
     const file = req.file
 
     if (!title || !category || !department || !file) {
@@ -80,6 +91,17 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
         uploader: { select: { id: true, name: true, role: true } }
       },
     })
+
+    const isForGM = String(addressedTo || '').toUpperCase() === 'GENERAL_MANAGER'
+      || ['true', '1', 'yes', 'on'].includes(String(forGMAttention || '').toLowerCase())
+
+    if (isForGM) {
+      await createPendingRouting({
+        sourceType: 'DOCUMENT',
+        sourceId: document.id,
+        addressedTo: 'GENERAL_MANAGER',
+      })
+    }
 
     await logAudit({
       userId:      req.user.id,

@@ -9,9 +9,13 @@ import dotenv         from 'dotenv'
 import authRoutes         from './routes/auth.routes.js'
 import documentRoutes     from './routes/documents.routes.js'
 import procurementRoutes  from './routes/procurement.routes.js'
+import recordsRoutes      from './routes/records.routes.js'
+import draftRoutes        from './routes/drafts.routes.js'
+import scheduleRoutes     from './routes/schedule.routes.js'
 import activityLogRoutes  from './routes/activityLogs.routes.js'
 import userRoutes         from './routes/users.routes.js'
 import auditTrailRoutes   from './routes/auditTrail.routes.js'
+import paRoutes           from './routes/pa.routes.js'
 import aiRoutes           from './routes/ai.routes.js'
 
 dotenv.config()
@@ -64,9 +68,13 @@ app.get('/health', (req, res) => {
 app.use('/api/auth',          authRoutes)
 app.use('/api/documents',     documentRoutes)
 app.use('/api/procurement',   procurementRoutes)
+app.use('/api/records',       recordsRoutes)
+app.use('/api/drafts',        draftRoutes)
+app.use('/api/schedule',      scheduleRoutes)
 app.use('/api/activity-logs', activityLogRoutes)
 app.use('/api/users',         userRoutes)
 app.use('/api/audit-trail',   auditTrailRoutes)
+app.use('/api/pa',            paRoutes)
 app.use('/api/ai',            aiLimiter, aiRoutes)
 
 // 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)

@@ -25,6 +25,9 @@ model User {
   auditLogs           AuditLog[]
   registryEntries     RegistryEntry[]
   annotations         Annotation[]
+  scheduleEvents      GMScheduleEvent[]      @relation("ScheduleCreator")
+  documentRoutings    DocumentRouting[]      @relation("DocumentTriager")
+  draftDocuments      DraftDocument[]        @relation("DraftAuthor")
 
   @@map("users")
 }
@@ -135,10 +138,51 @@ model Annotation {
   @@map("annotations")
 }
 
+model GMScheduleEvent {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  startTime   DateTime
+  endTime     DateTime
+  location    String?
+  createdById Int
+  createdBy   User     @relation("ScheduleCreator", fields: [createdById], references: [id])
+  status      String   @default("CONFIRMED")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DocumentRouting {
+  id          String   @id @default(cuid())
+  sourceType  String
+  sourceId    String
+  addressedTo String   @default("GENERAL_MANAGER")
+  triagedById Int?
+  triagedBy   User?    @relation("DocumentTriager", fields: [triagedById], references: [id])
+  priority    String   @default("NORMAL")
+  paNote      String?
+  status      String   @default("PENDING_TRIAGE")
+  createdAt   DateTime @default(now())
+  forwardedAt DateTime?
+}
+
+model DraftDocument {
+  id         String   @id @default(cuid())
+  title      String
+  content    String   @db.Text
+  draftedById Int
+  draftedBy  User     @relation("DraftAuthor", fields: [draftedById], references: [id])
+  status     String   @default("DRAFT")
+  gmFeedback String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 // ─── ENUMS ────────────────────────────────────────────────────────────────────
 
 enum Role {
   GENERAL_MANAGER
+  GM_PERSONAL_ASSISTANT
   DEPARTMENT_HEAD
   STAFF
   IT_ADMINISTRATOR
@@ -184,6 +228,11 @@ enum AuditAction {
   PROCUREMENT_SUBMIT
   PROCUREMENT_APPROVE
   PROCUREMENT_REJECT
+  PA_TRIAGED_DOCUMENT
+  DRAFT_CREATED
+  DRAFT_SUBMITTED
+  DRAFT_REVIEWED
+  DRAFT_FINALIZED
   LOG_ENTRY
   USER_CREATED
   USER_UPDATED
