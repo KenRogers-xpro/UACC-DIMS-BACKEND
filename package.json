@@ -1,35 +1,7 @@
 {
-  "name": "uacc-dims-backend",
-  "version": "1.0.0",
-  "description": "UACC DIMS Backend API",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "seed": "node prisma/seed.js"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.js"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/KenRogers-xpro/UACC-DIMS-BACKEND.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
-  "bugs": {
-    "url": "https://github.com/KenRogers-xpro/UACC-DIMS-BACKEND/issues"
-  },
-  "homepage": "https://github.com/KenRogers-xpro/UACC-DIMS-BACKEND#readme",
-  "devDependencies": {
-    "@types/node": "^26.0.1",
-    "nodemon": "^3.1.14"
-  },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@prisma/client": "^4.15.0",
+    "@prisma/client": "^7.8.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.10.0",
     "compression": "^1.8.1",
@@ -44,7 +16,11 @@
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.1",
-    "prisma": "^4.15.0",
+    "prisma": "^7.8.0",
     "resend": "^6.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "nodemon": "^3.1.14"
   }
 }
