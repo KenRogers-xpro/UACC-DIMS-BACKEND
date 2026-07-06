@@ -110,7 +110,7 @@ router.post('/', authenticate, async (req, res) => {
         department,
         justification:     String(justification).trim(),
         requestedById:     req.user.id,
-        status:            'PENDING',
+        status:            'PENDING_DEPT_HEAD',
       },
       include: {
         requestedBy: { select: { id: true, name: true, email: true, role: true } },
@@ -143,16 +143,13 @@ router.post('/', authenticate, async (req, res) => {
 // PATCH /api/procurement/:id/decision
 router.patch('/:id/decision', authenticate, async (req, res) => {
   try {
-    const allowedRoles = ['DEPARTMENT_HEAD', 'GENERAL_MANAGER']
+    const allowedRoles = ['DEPARTMENT_HEAD', 'PROCUREMENT_OFFICER', 'GENERAL_MANAGER']
     if (!allowedRoles.includes(req.user.role)) {
       return error(res, 'Not authorized to approve procurement requests', 403)
     }
 
-    const { decision, comment } = req.body
-    if (!['APPROVED', 'REJECTED'].includes(decision)) {
-      return error(res, 'Decision must be APPROVED or REJECTED')
-    }
-
+    const { decision, comment, vendorName, vendorVerified, budgetVerified } = req.body
+    
     const request = await prisma.procurementRequest.findUnique({
       where:   { id: parseInt(req.params.id) },
       include: { requestedBy: { select: { name: true, email: true } } },
@@ -160,20 +157,54 @@ router.patch('/:id/decision', authenticate, async (req, res) => {
     if (!request) return notFound(res, 'Request not found')
 
     let updateData = {}
+    let auditAction = ''
+    let emailSubject = ''
+    let emailHtml = ''
 
     if (req.user.role === 'DEPARTMENT_HEAD') {
-      if (request.status !== 'PENDING') {
+      if (!['APPROVED', 'REJECTED'].includes(decision)) {
+        return error(res, 'Decision must be APPROVED or REJECTED')
+      }
+      if (request.status !== 'PENDING_DEPT_HEAD') {
         return error(res, 'Request is not pending department head review')
       }
       updateData = {
-        status:           decision === 'APPROVED' ? 'DEPT_HEAD_APPROVED' : 'REJECTED',
+        status:           decision === 'APPROVED' ? 'PENDING_PROCUREMENT_OFFICER' : 'REJECTED',
         deptHeadApproval: decision,
         deptHeadComment:  comment || null,
         approvedById:     req.user.id,
       }
+      auditAction = decision === 'APPROVED' ? 'PROCUREMENT_APPROVE' : 'PROCUREMENT_REJECT'
+    } else if (req.user.role === 'PROCUREMENT_OFFICER') {
+      if (!['VERIFIED', 'RETURNED'].includes(decision)) {
+        return error(res, 'Decision must be VERIFIED or RETURNED')
+      }
+      if (request.status !== 'PENDING_PROCUREMENT_OFFICER') {
+        return error(res, 'Request is not pending procurement officer review')
+      }
+      
+      updateData = {
+        status: decision === 'VERIFIED' ? 'PENDING_GM' : 'PENDING_DEPT_HEAD',
+        vendorName: vendorName || request.vendorName,
+        vendorVerified: vendorVerified === true,
+        budgetVerified: budgetVerified === true,
+        poNotes: comment || null,
+        poProcessedById: req.user.id,
+        poProcessedAt: new Date()
+      }
+      
+      // If returned to Dept Head, reset Dept Head approval
+      if (decision === 'RETURNED') {
+        updateData.deptHeadApproval = null
+      }
+
+      auditAction = decision === 'VERIFIED' ? 'PROCUREMENT_VENDOR_VERIFIED' : 'PROCUREMENT_REJECT'
     } else if (req.user.role === 'GENERAL_MANAGER') {
-      if (request.status !== 'DEPT_HEAD_APPROVED') {
-        return error(res, 'Request has not been approved by Department Head yet')
+      if (!['APPROVED', 'REJECTED'].includes(decision)) {
+        return error(res, 'Decision must be APPROVED or REJECTED')
+      }
+      if (request.status !== 'PENDING_GM') {
+        return error(res, 'Request has not been verified by Procurement Officer yet')
       }
       updateData = {
         status:       decision,
@@ -181,6 +212,7 @@ router.patch('/:id/decision', authenticate, async (req, res) => {
         gmComment:    comment || null,
         approvedById: req.user.id,
       }
+      auditAction = decision === 'APPROVED' ? 'PROCUREMENT_APPROVE' : 'PROCUREMENT_REJECT'
     }
 
     const updated = await prisma.procurementRequest.update({
@@ -190,22 +222,36 @@ router.patch('/:id/decision', authenticate, async (req, res) => {
 
     await logAudit({
       userId:      req.user.id,
-      action:      decision === 'APPROVED' ? 'PROCUREMENT_APPROVE' : 'PROCUREMENT_REJECT',
+      action:      auditAction,
       module:      'Procurement',
       description: `${decision} ${request.referenceNo}${comment ? ` — ${comment}` : ''}`,
       ipAddress:   req.ip,
     })
 
-    // Send email to requester
-    const tmpl = templates.procurementDecision(request, decision, comment)
-    await sendEmail({
-      to:      request.requestedBy.email,
-      subject: tmpl.subject,
-      html:    tmpl.html,
-    })
+    // Email logic
+    if (decision === 'REJECTED' || decision === 'RETURNED' || (req.user.role === 'GENERAL_MANAGER' && decision === 'APPROVED')) {
+      // Send email to requester for final decisions or returns
+      const tmpl = templates.procurementDecision(request, decision, comment)
+      await sendEmail({
+        to:      request.requestedBy.email,
+        subject: tmpl.subject,
+        html:    tmpl.html,
+      })
+    }
 
-    // Notify GM if dept head approved
+    // Notify Procurement Officer if dept head approved
     if (req.user.role === 'DEPARTMENT_HEAD' && decision === 'APPROVED') {
+      const pos = await prisma.user.findMany({
+        where: { role: 'PROCUREMENT_OFFICER', isActive: true }
+      })
+      for (const po of pos) {
+        const tmpl = templates.procurementSubmitted(request, po)
+        await sendEmail({ to: po.email, subject: tmpl.subject, html: tmpl.html })
+      }
+    }
+
+    // Notify GM if procurement officer verified
+    if (req.user.role === 'PROCUREMENT_OFFICER' && decision === 'VERIFIED') {
       await createPendingRouting({
         sourceType: 'PROCUREMENT_REQUEST',
         sourceId: request.id,
@@ -216,13 +262,10 @@ router.patch('/:id/decision', authenticate, async (req, res) => {
         where: { role: 'GENERAL_MANAGER', isActive: true }
       })
       if (gm) {
-        const gmTmpl = templates.procurementSubmitted(
-          { ...request, requestedBy: request.requestedBy },
-          gm
-        )
+        const gmTmpl = templates.procurementOfficerVerified(request, gm)
         await sendEmail({
           to:      gm.email,
-          subject: `[DIMS] Awaiting Final Approval — ${request.referenceNo}`,
+          subject: gmTmpl.subject,
           html:    gmTmpl.html,
         })
       }

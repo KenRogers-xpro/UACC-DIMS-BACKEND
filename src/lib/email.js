@@ -19,6 +19,10 @@ export const templates = {
     subject: `Procurement ${decision} — ${request.referenceNo}`,
     html: `<p>Your procurement request ${request.referenceNo} has been ${decision.toLowerCase()}.</p><p>${comment || ''}</p>`,
   }),
+  procurementOfficerVerified: (request, recipient) => ({
+    subject: `Procurement Verified — ${request.referenceNo}`,
+    html: `<p>Dear ${recipient.name},</p><p>Procurement request ${request.referenceNo} has been verified by the Procurement Officer and is awaiting your final approval.</p>`,
+  }),
 }
 
 export async function sendEmail({ to, subject, html }) {

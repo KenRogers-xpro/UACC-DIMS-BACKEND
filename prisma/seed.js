@@ -1,5 +1,7 @@
-import { PrismaClient } from '@prisma/client'
-import bcrypt from 'bcryptjs'
+import pkg from '@prisma/client'
+const { PrismaClient } = pkg
+import bcryptPkg from 'bcryptjs'
+const bcrypt = bcryptPkg.default || bcryptPkg
 
 const prisma = new PrismaClient()
 
@@ -15,6 +17,7 @@ async function main() {
     { name: 'Staff Operations',        email: 'staff@uacc.go.ug',           role: 'STAFF',             department: 'OPERATIONS'                 },
     { name: 'Internal Auditor',        email: 'auditor@uacc.go.ug',         role: 'AUDITOR',           department: 'FINANCE_AND_ADMINISTRATION' },
     { name: 'Records Executive',       email: 'records@uacc.go.ug',         role: 'RECORDS_EXECUTIVE', department: 'FINANCE_AND_ADMINISTRATION' },
+    { name: 'Procurement Officer',     email: 'procurement.officer@uacc.go.ug', role: 'PROCUREMENT_OFFICER', department: 'FINANCE_AND_ADMINISTRATION' },
   ]
 
   for (const u of users) {

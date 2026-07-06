@@ -21,6 +21,7 @@ model User {
   documents           Document[]
   procurementRequests ProcurementRequest[] @relation("RequestedBy")
   approvedRequests    ProcurementRequest[] @relation("ApprovedBy")
+  poProcessedRequests ProcurementRequest[] @relation("POProcessedBy")
   activityLogs        ActivityLog[]
   auditLogs           AuditLog[]
   registryEntries     RegistryEntry[]
@@ -58,9 +59,16 @@ model ProcurementRequest {
   department         Department
   justification      String
   supportingDocument String?
-  status             ProcurementStatus @default(PENDING)
+  status             ProcurementStatus @default(PENDING_DEPT_HEAD)
   deptHeadApproval   ApprovalStatus?
   deptHeadComment    String?
+  vendorName         String?
+  vendorVerified     Boolean           @default(false)
+  budgetVerified     Boolean           @default(false)
+  poNotes            String?
+  poProcessedById    Int?
+  poProcessedBy      User?             @relation("POProcessedBy", fields: [poProcessedById], references: [id])
+  poProcessedAt      DateTime?
   gmApproval         ApprovalStatus?
   gmComment          String?
   requestedById      Int
@@ -188,6 +196,7 @@ enum Role {
   IT_ADMINISTRATOR
   AUDITOR
   RECORDS_EXECUTIVE
+  PROCUREMENT_OFFICER
 }
 
 enum Department {
@@ -208,8 +217,9 @@ enum DocumentCategory {
 }
 
 enum ProcurementStatus {
-  PENDING
-  DEPT_HEAD_APPROVED
+  PENDING_DEPT_HEAD
+  PENDING_PROCUREMENT_OFFICER
+  PENDING_GM
   APPROVED
   REJECTED
 }
@@ -226,6 +236,7 @@ enum AuditAction {
   DOCUMENT_DOWNLOAD
   DOCUMENT_DELETE
   PROCUREMENT_SUBMIT
+  PROCUREMENT_VENDOR_VERIFIED
   PROCUREMENT_APPROVE
   PROCUREMENT_REJECT
   PA_TRIAGED_DOCUMENT

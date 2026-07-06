@@ -17,6 +17,69 @@ router.get('/stats', authenticate, async (req, res) => {
 
     const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
+    if (req.user.role === 'PROCUREMENT_OFFICER') {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const firstDayOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const lastDayOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0, 23, 59, 59);
+
+      const [
+        pendingVerification,
+        processedRequests,
+        vendorBreakdownRaw,
+        requestsThisMonthCount,
+        requestsLastMonthCount,
+        flaggedForClarification
+      ] = await Promise.all([
+        prisma.procurementRequest.count({ where: { status: 'PENDING_PROCUREMENT_OFFICER' } }),
+        prisma.procurementRequest.findMany({
+          where: { poProcessedAt: { gte: thirtyDaysAgo } },
+          select: { poProcessedAt: true, createdAt: true }
+        }),
+        prisma.procurementRequest.groupBy({
+          by: ['vendorName'],
+          where: { vendorName: { not: null } },
+          _count: { id: true },
+          orderBy: { _count: { id: 'desc' } },
+          take: 5
+        }),
+        prisma.procurementRequest.count({ where: { createdAt: { gte: firstDayOfMonth } } }),
+        prisma.procurementRequest.count({ where: { createdAt: { gte: firstDayOfLastMonth, lte: lastDayOfLastMonth } } }),
+        prisma.procurementRequest.count({ where: { status: 'PENDING_DEPT_HEAD', poNotes: { not: null } } })
+      ]);
+
+      let totalProcessingTime = 0;
+      processedRequests.forEach(req => {
+        totalProcessingTime += (req.poProcessedAt - req.createdAt);
+      });
+      const avgProcessingTimeMs = processedRequests.length > 0 ? totalProcessingTime / processedRequests.length : 0;
+      const averageProcessingTime = `${(avgProcessingTimeMs / (1000 * 60 * 60)).toFixed(1)} hours`;
+
+      let percentChange = 0;
+      if (requestsLastMonthCount > 0) {
+        percentChange = Math.round(((requestsThisMonthCount - requestsLastMonthCount) / requestsLastMonthCount) * 100);
+      } else if (requestsThisMonthCount > 0) {
+        percentChange = 100;
+      }
+
+      const vendorBreakdown = vendorBreakdownRaw.map(v => ({
+        vendor: v.vendorName,
+        count: v._count.id
+      }));
+
+      return success(res, {
+        pendingVerification,
+        averageProcessingTime,
+        vendorBreakdown,
+        requestsThisMonth: {
+          count: requestsThisMonthCount,
+          percentChange
+        },
+        flaggedForClarification
+      });
+    }
+
     const [
       totalDocuments,
       docsThisMonth,
@@ -26,7 +89,7 @@ router.get('/stats', authenticate, async (req, res) => {
     ] = await Promise.all([
       prisma.document.count(),
       prisma.document.count({ where: { createdAt: { gte: firstDayOfMonth } } }),
-      prisma.procurementRequest.count({ where: { status: 'PENDING' } }),
+      prisma.procurementRequest.count({ where: { status: 'PENDING_DEPT_HEAD' } }),
       prisma.activityLog.count({ where: { createdAt: { gte: today } } }),
       prisma.user.count({ where: { isActive: true } }),
     ]);
