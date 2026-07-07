@@ -5,19 +5,20 @@ import morgan from 'morgan'
 import compression from 'compression'
 import rateLimit from 'express-rate-limit'
 
-import '../lib/env.js'
+import './lib/env.js'
 
-import authRoutes from '../routes/auth.routes.js'
-import documentRoutes from '../routes/documents.routes.js'
-import procurementRoutes from '../routes/procurement.routes.js'
-import recordsRoutes from '../routes/records.routes.js'
-import draftRoutes from '../routes/drafts.routes.js'
-import scheduleRoutes from '../routes/schedule.routes.js'
-import activityLogRoutes from '../routes/activityLogs.routes.js'
-import userRoutes from '../routes/users.routes.js'
-import auditTrailRoutes from '../routes/auditTrail.routes.js'
-import paRoutes from '../routes/pa.routes.js'
-import aiRoutes from '../routes/ai.routes.js'
+import authRoutes from './routes/auth.routes.js'
+import documentRoutes from './routes/documents.routes.js'
+import procurementRoutes from './routes/procurement.routes.js'
+import recordsRoutes from './routes/records.routes.js'
+import draftRoutes from './routes/drafts.routes.js'
+import scheduleRoutes from './routes/schedule.routes.js'
+import activityLogRoutes from './routes/activityLogs.routes.js'
+import userRoutes from './routes/users.routes.js'
+import auditTrailRoutes from './routes/auditTrail.routes.js'
+import paRoutes from './routes/pa.routes.js'
+import aiRoutes from './routes/ai.routes.js'
+import dashboardRoutes from './routes/dashboard.routes.js'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -75,6 +76,7 @@ app.use('/api/users', userRoutes)
 app.use('/api/audit-trail', auditTrailRoutes)
 app.use('/api/pa', paRoutes)
 app.use('/api/ai', aiLimiter, aiRoutes)
+app.use('/api/dashboard', dashboardRoutes)
 
 // 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)
 
