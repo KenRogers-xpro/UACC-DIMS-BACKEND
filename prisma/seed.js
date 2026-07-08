@@ -11,14 +11,19 @@ async function main() {
   const password = await bcrypt.hash('dims2026', 12)
 
   const users = [
-    { name: 'Lt. Gen. Nakibus Lakara', email: 'gm@uacc.go.ug',              role: 'GENERAL_MANAGER',   department: 'GENERAL_MANAGER_OFFICE'    },
-    { name: 'Patrick Katusabe',        email: 'it@uacc.go.ug',              role: 'IT_ADMINISTRATOR',  department: 'FINANCE_AND_ADMINISTRATION' },
-    { name: 'Head Engineering',        email: 'engineering.head@uacc.go.ug', role: 'DEPARTMENT_HEAD',  department: 'ENGINEERING'                },
-    { name: 'Staff Operations',        email: 'staff@uacc.go.ug',           role: 'STAFF',             department: 'OPERATIONS'                 },
-    { name: 'Internal Auditor',        email: 'auditor@uacc.go.ug',         role: 'AUDITOR',           department: 'FINANCE_AND_ADMINISTRATION' },
-    { name: 'Records Executive',       email: 'records@uacc.go.ug',         role: 'RECORDS_EXECUTIVE', department: 'FINANCE_AND_ADMINISTRATION' },
-    { name: 'Procurement Officer',     email: 'procurement.officer@uacc.go.ug', role: 'PROCUREMENT_OFFICER', department: 'FINANCE_AND_ADMINISTRATION' },
-  ]
+    { name: 'Lt. Gen. Nakibus Lakara', email: 'gm@uacc.go.ug',                 role: 'GENERAL_MANAGER',      department: 'GENERAL_MANAGER_OFFICE' },
+    { name: 'Patrick Katusabe',        email: 'it@uacc.go.ug',                 role: 'IT_ADMINISTRATOR',     department: 'FINANCE_AND_ADMINISTRATION' },
+    { name: 'Head Engineering',        email: 'engineering.head@uacc.go.ug',   role: 'DEPARTMENT_HEAD',      department: 'ENGINEERING' },
+    { name: 'Staff Operations',        email: 'staff@uacc.go.ug',              role: 'STAFF',                 department: 'OPERATIONS' },
+    { name: 'Internal Auditor',        email: 'auditor@uacc.go.ug',            role: 'INTERNAL_AUDITOR',      department: 'FINANCE_AND_ADMINISTRATION' },
+    { name: 'Records Executive',       email: 'records@uacc.go.ug',            role: 'RECORDS_EXECUTIVE',     department: 'FINANCE_AND_ADMINISTRATION' },
+    { name: 'Procurement Officer',     email: 'procurement.officer@uacc.go.ug', role: 'PROCUREMENT_OFFICER',  department: 'FINANCE_AND_ADMINISTRATION' },
+    { name: 'HR Manager',              email: 'hr@uacc.go.ug',                 role: 'HR_MANAGER',            department: 'HUMAN_RESOURCES' },
+    { name: 'Finance Director',        email: 'finance.director@uacc.go.ug',   role: 'FINANCE_DIRECTOR',      department: 'FINANCE_AND_ACCOUNTS' },
+    { name: 'Accounts Officer',        email: 'accounts@uacc.go.ug',           role: 'ACCOUNTS_OFFICER',      department: 'FINANCE_AND_ACCOUNTS' },
+    { name: 'Marketing Officer',       email: 'marketing@uacc.go.ug',          role: 'MARKETING_OFFICER',     department: 'MARKETING' },
+    { name: 'PA to GM',                email: 'pa.gm@uacc.go.ug',              role: 'GM_PERSONAL_ASSISTANT', department: 'GENERAL_MANAGER_OFFICE' },
+  ];
 
   for (const u of users) {
     const user = await prisma.user.upsert({
