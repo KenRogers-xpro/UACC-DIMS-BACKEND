@@ -154,4 +154,44 @@ router.post('/', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'
   }
 })
 
+// GET /api/records/circulation-copies
+router.get('/circulation-copies', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
+  try {
+    const { status = 'PENDING_FILING' } = req.query
+    const copies = await prisma.circulationRecordsCopy.findMany({
+      where: { status },
+      include: {
+        step: {
+          include: {
+            circulation: true,
+            fromUser: { select: { id: true, name: true, role: true } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    })
+    return success(res, copies)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/records/circulation-copies/:id/file
+router.put('/circulation-copies/:id/file', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
+  try {
+    const { id } = req.params
+    const copy = await prisma.circulationRecordsCopy.update({
+      where: { id },
+      data: {
+        status: 'FILED',
+        filedById: req.user.id,
+        filedAt: new Date()
+      }
+    })
+    return success(res, copy, 'Circulation copy filed successfully')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
 export default router

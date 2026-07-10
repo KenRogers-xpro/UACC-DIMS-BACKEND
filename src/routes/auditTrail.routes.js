@@ -8,7 +8,7 @@ const router = Router()
 router.get(
   '/',
   authenticate,
-  authorize('AUDITOR', 'GENERAL_MANAGER', 'IT_ADMINISTRATOR'),
+  authorize(['INTERNAL_AUDITOR', 'GENERAL_MANAGER', 'IT_ADMINISTRATOR']),
   async (req, res) => {
     try {
       const {

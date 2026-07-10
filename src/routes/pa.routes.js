@@ -72,14 +72,24 @@ function uniqueByEmail(users) {
 // GET /api/pa/inbox
 router.get('/inbox', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
   try {
-    const routings = await prisma.documentRouting.findMany({
-      where: { status: 'PENDING_TRIAGE' },
-      orderBy: { createdAt: 'asc' },
+    const circulations = await prisma.documentCirculation.findMany({
+      where: { 
+        currentHolderRole: 'GENERAL_MANAGER',
+        status: 'IN_CIRCULATION'
+      },
+      include: {
+        originator: { select: { id: true, name: true, email: true } },
+        steps: {
+          orderBy: { stepNumber: 'asc' },
+          include: {
+            fromUser: { select: { id: true, name: true, email: true } }
+          }
+        }
+      },
+      orderBy: { updatedAt: 'desc' },
     })
 
-    const inbox = await Promise.all(routings.map(loadRoutingContext))
-
-    return success(res, inbox)
+    return success(res, circulations)
   } catch (err) {
     return serverError(res, err)
   }
@@ -88,39 +98,69 @@ router.get('/inbox', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (
 // PUT /api/pa/inbox/:id/forward
 router.put('/inbox/:id/forward', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
   try {
-    const routing = await prisma.documentRouting.findUnique({
-      where: { id: req.params.id },
+    const { id } = req.params
+    const { toRole, instruction, paNote, decision, amount } = req.body
+
+    const existingCirculation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: {
+        steps: {
+          orderBy: { stepNumber: 'desc' },
+          take: 1
+        }
+      }
     })
 
-    if (!routing) return notFound(res, 'Routing record not found')
+    if (!existingCirculation) return notFound(res, 'Circulation not found')
 
-    if (routing.status !== 'PENDING_TRIAGE') {
-      return error(res, 'Routing record is no longer pending triage', 409)
+    if (existingCirculation.currentHolderRole !== 'GENERAL_MANAGER') {
+      return error(res, 'Circulation is not currently with the GM', 403)
     }
 
-    const paNote = req.body.paNote ? String(req.body.paNote).trim() : null
-    const priority = normalizePriority(req.body.priority, routing.priority)
+    const nextStepNumber = existingCirculation.steps.length > 0 ? existingCirculation.steps[0].stepNumber + 1 : 1
+    const note = instruction || paNote || ''
 
-    const updated = await prisma.documentRouting.update({
-      where: { id: req.params.id },
-      data: {
-        paNote,
-        priority,
-        status: 'FORWARDED',
-        forwardedAt: new Date(),
-        triagedById: req.user.id,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.documentCirculation.update({
+        where: { id },
+        data: {
+          currentHolderRole: toRole,
+          status: 'IN_CIRCULATION'
+        }
+      })
+
+      return await tx.circulationStep.create({
+        data: {
+          circulationId: id,
+          stepNumber: nextStepNumber,
+          fromUserId: req.user.id,
+          fromRole: 'GENERAL_MANAGER', // PA acting on behalf of GM
+          toRole,
+          instruction: note,
+          stepType: 'FORWARD',
+          decision,
+          amount: amount ? Number(amount) : null,
+          recordsCopies: {
+            create: {
+              status: 'PENDING_FILING'
+            }
+          }
+        },
+        include: {
+          recordsCopies: true
+        }
+      })
     })
 
     await logAudit({
       userId: req.user.id,
       action: 'PA_TRIAGED_DOCUMENT',
       module: 'PA Inbox',
-      description: `Triaged ${routing.sourceType} ${routing.sourceId}${paNote ? ` — Note: ${paNote}` : ''}${priority ? ` — Priority: ${priority}` : ''}`,
+      description: `Triaged ${existingCirculation.sourceType || 'Document'} ${existingCirculation.sourceId || existingCirculation.id} on behalf of GM${note ? ` — Note: ${note}` : ''}`,
       ipAddress: req.ip,
     })
 
-    return success(res, updated, 'Routing forwarded successfully')
+    return success(res, result, 'Circulation forwarded successfully on behalf of GM')
   } catch (err) {
     return serverError(res, err)
   }
