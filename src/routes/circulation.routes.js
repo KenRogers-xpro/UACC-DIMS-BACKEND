@@ -78,8 +78,8 @@ router.post('/:id/step', async (req, res) => {
       return res.status(403).json({ success: false, message: 'You are not the current holder of this document' })
     }
 
-    const nextStepNumber = existingCirculation.steps.length > 0 
-      ? existingCirculation.steps[0].stepNumber + 1 
+    const nextStepNumber = existingCirculation.steps.length > 0
+      ? existingCirculation.steps[0].stepNumber + 1
       : 1
     const newStatus = stepType === 'FINAL_DECISION' ? 'CLOSED' : 'IN_CIRCULATION'
 
