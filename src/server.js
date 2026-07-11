@@ -93,7 +93,11 @@ app.use((err, req, res, next) => {
 
 // ── START ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, (err) => {
+	if (err) {
+		console.error('\n❌ Failed to start server:', err)
+		process.exit(1)
+	}
 	console.log(`\n🚀 UACC DIMS API running on port ${PORT}`)
 	console.log(`📡 Environment: ${process.env.NODE_ENV}`)
 	console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`)

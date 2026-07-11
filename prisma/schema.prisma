@@ -7,6 +7,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── CORE ───────────────────────────────────────────────────────────────────
+
 model User {
   id          Int        @id @default(autoincrement())
   name        String
@@ -15,6 +17,8 @@ model User {
   role        Role       @default(STAFF)
   department  Department
   isActive    Boolean    @default(true)
+  signingPinHash   String?   // bcrypt-hashed 4-6 digit signing PIN, separate from login password
+  signingPinSetAt  DateTime?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -31,6 +35,15 @@ model User {
   circulationsOriginated DocumentCirculation[] @relation("CirculationOriginator")
   circulationStepsFrom   CirculationStep[]     @relation("StepFrom")
   recordsFiled           CirculationRecordsCopy[]
+  awaitingCorrections    DocumentCirculation[] @relation("AwaitingCorrection")
+
+  documentVersions    DocumentVersion[]
+  signatures          DigitalSignature[]
+  recordsFilesCreated RecordsFile[]
+  dispatchedRecords   DispatchRecord[]        @relation("DispatchedBy")
+  messagesSent        DirectMessage[]         @relation("MessageSender")
+  messagesReceived    DirectMessage[]         @relation("MessageRecipient")
+  announcements       Announcement[]
 
   @@map("users")
 }
@@ -49,7 +62,24 @@ model Document {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  annotations Annotation[]
+  versions    DocumentVersion[]
+
   @@map("documents")
+}
+
+model DocumentVersion {
+  id            String   @id @default(cuid())
+  documentId    Int
+  document      Document @relation(fields: [documentId], references: [id])
+  versionNumber Int
+  fileUrl       String
+  filePublicId  String
+  uploadedById  Int
+  uploadedBy    User     @relation(fields: [uploadedById], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@index([documentId])
 }
 
 model ProcurementRequest {
@@ -109,9 +139,11 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// ─── RECORDS REGISTRY & FILING ──────────────────────────────────────────────
+
 model RegistryEntry {
-  id               Int            @id @default(autoincrement())
-  registryNo       String         @unique
+  id               Int                @id @default(autoincrement())
+  registryNo       String             @unique
   subject          String
   docType          DocType
   direction        DocDirection
@@ -119,12 +151,22 @@ model RegistryEntry {
   destination      String
   receivedFrom     String?
   handledById      Int
-  handledBy        User           @relation(fields: [handledById], references: [id])
-  priority         DocPriority    @default(NORMAL)
+  handledBy        User               @relation(fields: [handledById], references: [id])
+  priority         DocPriority        @default(NORMAL)
   medium           DocMedium
   fileRef          String?
   physicalLocation String?
-  status           RegistryStatus @default(PENDING)
+  status           RegistryStatus     @default(PENDING)
+  confidentiality  DocConfidentiality @default(INTERNAL)
+
+  // Records governance / compliance tracking
+  retentionPeriodMonths Int?      // how long this record must be retained; null = indefinite
+  retentionExpiresAt    DateTime? // computed as dateRegistered + retentionPeriodMonths
+
+  // Entity-file / dossier linkage — Records Executive's discretion, nullable
+  recordsFileId    String?
+  recordsFile      RecordsFile?   @relation(fields: [recordsFileId], references: [id])
+
   dateRegistered   DateTime
   dateDispatched   DateTime?
   dateReceived     DateTime?
@@ -136,17 +178,80 @@ model RegistryEntry {
   @@map("registry_entries")
 }
 
-model Annotation {
-  id              Int           @id @default(autoincrement())
-  registryEntryId Int
-  registryEntry   RegistryEntry @relation(fields: [registryEntryId], references: [id])
-  authorId        Int
-  author          User          @relation(fields: [authorId], references: [id])
-  text            String
-  createdAt       DateTime      @default(now())
+// Freeform, Records-Executive-controlled dossier. Not a fixed taxonomy —
+// RE decides what folders exist (personal files, officer files, asset files, etc).
+model RecordsFile {
+  id            String   @id @default(cuid())
+  fileNumber    String   @unique
+  title         String
+  fileType      String?  // free text label, RE's own categorization
+  description   String?
+  status        String   @default("ACTIVE") // ACTIVE, ARCHIVED, CLOSED
+  createdById   Int
+  createdBy     User     @relation(fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
+  entries       RegistryEntry[]
+
+  @@index([fileNumber])
+}
+
+model Annotation {
+  id              Int            @id @default(autoincrement())
+  registryEntryId Int?
+  registryEntry   RegistryEntry? @relation(fields: [registryEntryId], references: [id])
+  documentId      Int?
+  document        Document?      @relation(fields: [documentId], references: [id])
+  authorId        Int
+  author          User           @relation(fields: [authorId], references: [id])
+  type            String         @default("COMMENT") // COMMENT, NOTE, ACTION, FLAG
+  text            String
+  createdAt       DateTime       @default(now())
+
+  // Application layer must enforce: exactly one of registryEntryId / documentId is set.
   @@map("annotations")
 }
+
+// Semantic search embeddings (pgvector). Prisma cannot manage the vector column
+// type directly — the `vector(768)` column and pgvector extension must be created
+// via raw SQL migration (CREATE EXTENSION IF NOT EXISTS vector; then ALTER TABLE
+// ADD COLUMN embedding vector(768);). 768 dimensions matches gemini-embedding-001.
+model DocumentEmbedding {
+  id          String   @id @default(cuid())
+  sourceType  String   // "DOCUMENT", "REGISTRY_ENTRY", "CIRCULATION_STEP", "DRAFT_DOCUMENT"
+  sourceId    String   // polymorphic — stores the source record's ID as text regardless
+                        // of whether the source table uses Int or String primary keys
+  chunkIndex  Int
+  chunkText   String   @db.Text
+  embedding   Unsupported("vector(768)")
+  createdAt   DateTime @default(now())
+
+  @@index([sourceType, sourceId])
+}
+
+// ─── DIGITAL SIGNATURES ─────────────────────────────────────────────────────
+
+model DigitalSignature {
+  id                   String   @id @default(cuid())
+  circulationStepId    String?  @unique
+  circulationStep      CirculationStep? @relation(fields: [circulationStepId], references: [id])
+  signerId             Int
+  signer               User     @relation(fields: [signerId], references: [id])
+  signerRole           String   // role AT TIME of signing, captured explicitly
+  decision             String
+  verifiedWithPin      Boolean  @default(false)
+  verifiedWithPassword Boolean  @default(false) // true only for high-stakes actions
+  previousHash         String?  // hash of the prior signature in this document's chain
+  signatureHash        String   // SHA-256 of (signerId + decision + timestamp + previousHash)
+  supersededAt         DateTime? // set when the underlying document is corrected/resubmitted
+  ipAddress            String?
+  signedAt             DateTime @default(now())
+
+  @@index([signerId])
+}
+
+// ─── SCHEDULING (GM / PA) ───────────────────────────────────────────────────
 
 model GMScheduleEvent {
   id          String   @id @default(cuid())
@@ -157,25 +262,31 @@ model GMScheduleEvent {
   location    String?
   createdById Int
   createdBy   User     @relation("ScheduleCreator", fields: [createdById], references: [id])
-  status      String   @default("CONFIRMED")
+  status      String   @default("CONFIRMED") // CONFIRMED, TENTATIVE, CANCELLED
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
 
+// ─── DOCUMENT CIRCULATION ───────────────────────────────────────────────────
+
 model DocumentCirculation {
-  id               String   @id @default(cuid())
-  title            String
-  sourceType       String?  // "DOCUMENT", "REGISTRY_ENTRY", "PROCUREMENT_REQUEST", 
-                              // "STANDALONE_MEMO" — nullable for memos with no 
-                              // pre-existing system record
-  sourceId         String?
-  originatorId     Int
-  originator       User     @relation("CirculationOriginator", fields: [originatorId], references: [id])
-  currentHolderRole String  // whoever currently "has" the document, e.g. "GENERAL_MANAGER"
-  status           String   @default("IN_CIRCULATION") // IN_CIRCULATION, CLOSED
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  steps            CirculationStep[]
+  id                String   @id @default(cuid())
+  title             String
+  sourceType        String?  // "DOCUMENT", "REGISTRY_ENTRY", "PROCUREMENT_REQUEST", "STANDALONE_MEMO"
+  sourceId          String?
+  originatorId      Int
+  originator        User     @relation("CirculationOriginator", fields: [originatorId], references: [id])
+  currentHolderRole String   // whoever currently "has" the document, e.g. "GENERAL_MANAGER"
+  status            String   @default("IN_CIRCULATION") // IN_CIRCULATION, CLOSED
+
+  // Immutability / correction handling
+  awaitingCorrectionFrom Int?
+  awaitingCorrectionUser User? @relation("AwaitingCorrection", fields: [awaitingCorrectionFrom], references: [id])
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  steps             CirculationStep[]
+  dispatchRecord    DispatchRecord?
 }
 
 model CirculationStep {
@@ -189,40 +300,93 @@ model CirculationStep {
   toUserId        Int?     // nullable if routed to a role generally, not a specific person
   toRole          String
   instruction     String   @db.Text // the annotation text, e.g. "Please verify"
-  stepType        String   // FORWARD, VERIFICATION_REQUEST, VERIFICATION_RESPONSE, 
-                             // APPROVAL, FINAL_DECISION
-  decision        String?  // e.g. "NO_OBJECTION", "APPROVED", "REJECTED" — nullable
-  amount          Decimal? // for financial approvals, e.g. the USD 3,500 in your example
-  signedAt        DateTime @default(now()) // digital equivalent of the handwritten 
-                                             // signature + date, tied to authenticated user
+  stepType        String   // FORWARD, VERIFICATION_REQUEST, VERIFICATION_RESPONSE,
+                            // APPROVAL, FINAL_DECISION, RETURNED_FOR_CORRECTION, RESUBMITTED
+  decision        String?  // e.g. "NO_OBJECTION", "APPROVED", "REJECTED"
+  amount          Decimal? // for financial approvals
+  signedAt        DateTime @default(now())
   createdAt       DateTime @default(now())
+
   recordsCopies   CirculationRecordsCopy[]
+  signature       DigitalSignature?
 }
 
 model CirculationRecordsCopy {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   circulationStepId String
   step              CirculationStep @relation(fields: [circulationStepId], references: [id])
-  status            String   @default("PENDING_FILING") // PENDING_FILING, FILED
+  status            String    @default("PENDING_FILING") // PENDING_FILING, FILED
   filedById         Int?
-  filedBy           User?    @relation(fields: [filedById], references: [id])
+  filedBy           User?     @relation(fields: [filedById], references: [id])
   filedAt           DateTime?
-  createdAt         DateTime @default(now())
+  createdAt         DateTime  @default(now())
 }
+
+// ─── DISPATCH (outgoing, external) ──────────────────────────────────────────
+
+model DispatchRecord {
+  id                     String    @id @default(cuid())
+  dispatchNumber         String    @unique
+  circulationId          String    @unique
+  circulation            DocumentCirculation @relation(fields: [circulationId], references: [id])
+  recipientName          String
+  recipientOrganization  String?
+  recipientAddress       String?
+  recipientEmail         String?
+  dispatchMethod         String    // POST, COURIER, EMAIL, HAND_DELIVERY
+  dispatchedById         Int
+  dispatchedBy           User      @relation("DispatchedBy", fields: [dispatchedById], references: [id])
+  dispatchedAt           DateTime  @default(now())
+  status                 String    @default("DISPATCHED") // DISPATCHED, DELIVERED, ACKNOWLEDGED, RETURNED, LOST
+  proofOfDeliveryUrl     String?
+  acknowledgedAt         DateTime?
+  acknowledgedBy         String?   // free text — external signatory, not a User FK
+  trackingReference      String?
+  notes                  String?   @db.Text
+  createdAt              DateTime  @default(now())
+}
+
+// ─── DRAFTS (PA drafting on behalf of GM) ───────────────────────────────────
 
 model DraftDocument {
-  id         String   @id @default(cuid())
-  title      String
-  content    String   @db.Text
+  id          String   @id @default(cuid())
+  title       String
+  content     String   @db.Text
   draftedById Int
-  draftedBy  User     @relation("DraftAuthor", fields: [draftedById], references: [id])
-  status     String   @default("DRAFT")
-  gmFeedback String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  draftedBy   User     @relation("DraftAuthor", fields: [draftedById], references: [id])
+  status      String   @default("DRAFT") // DRAFT, PENDING_GM_REVIEW, GM_APPROVED, GM_REJECTED, FINALIZED
+  gmFeedback  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
-// ─── ENUMS ────────────────────────────────────────────────────────────────────
+// ─── INTERNAL COMMUNICATIONS ────────────────────────────────────────────────
+
+model DirectMessage {
+  id          String    @id @default(cuid())
+  senderId    Int
+  sender      User      @relation("MessageSender", fields: [senderId], references: [id])
+  recipientId Int
+  recipient   User      @relation("MessageRecipient", fields: [recipientId], references: [id])
+  content     String    @db.Text
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([senderId, recipientId])
+  @@index([recipientId, readAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+  title     String
+  content   String   @db.Text
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
 
 enum Role {
   GENERAL_MANAGER
@@ -283,6 +447,7 @@ enum AuditAction {
   PROCUREMENT_APPROVE
   PROCUREMENT_REJECT
   PA_TRIAGED_DOCUMENT
+  PA_SENT_GM_COMMUNICATION
   DRAFT_CREATED
   DRAFT_SUBMITTED
   DRAFT_REVIEWED
@@ -291,6 +456,30 @@ enum AuditAction {
   USER_CREATED
   USER_UPDATED
   USER_DEACTIVATED
+  REGISTRY_ENTRY_CREATED
+  REGISTRY_ENTRY_UPDATED
+  REGISTRY_ENTRY_DELETED
+  ANNOTATION_ADDED
+  ANNOTATION_DELETED
+  RECORDS_FILE_CREATED
+  ENTRY_ATTACHED_TO_FILE
+  ENTRY_DETACHED_FROM_FILE
+  CIRCULATION_INITIATED
+  CIRCULATION_STEP_ADDED
+  DOCUMENT_RETURNED_FOR_CORRECTION
+  DOCUMENT_RESUBMITTED
+  SIGNATURE_CREATED
+  SIGNING_PIN_SET
+  SIGNING_PIN_CHANGED
+  DISPATCH_CREATED
+  DISPATCH_ACKNOWLEDGED
+  DISPATCH_STATUS_UPDATED
+  SCHEDULE_EVENT_CREATED
+  SCHEDULE_EVENT_UPDATED
+  SCHEDULE_EVENT_CANCELLED
+  MESSAGE_SENT
+  ANNOUNCEMENT_CREATED
+  ANNOUNCEMENT_DELETED
 }
 
 enum DocType {
@@ -321,6 +510,13 @@ enum DocMedium {
   PHYSICAL
   EMAIL
   BOTH
+}
+
+enum DocConfidentiality {
+  PUBLIC
+  INTERNAL
+  CONFIDENTIAL
+  RESTRICTED
 }
 
 enum RegistryStatus {
