@@ -1,63 +1,64 @@
--- CreateEnum
-CREATE TYPE "DocConfidentiality" AS ENUM ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "DocConfidentiality" AS ENUM ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AlterEnum
--- This migration adds more than one value to an enum.
--- With PostgreSQL versions 11 and earlier, this is not possible
--- in a single migration. This can be worked around by creating
--- multiple migrations, each migration adding only one value to
--- the enum.
+-- AlterEnum (idempotent — IF NOT EXISTS supported in PostgreSQL 12+)
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'PA_SENT_GM_COMMUNICATION';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'REGISTRY_ENTRY_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'REGISTRY_ENTRY_UPDATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'REGISTRY_ENTRY_DELETED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ANNOTATION_ADDED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ANNOTATION_DELETED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'RECORDS_FILE_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ENTRY_ATTACHED_TO_FILE';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ENTRY_DETACHED_FROM_FILE';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CIRCULATION_INITIATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CIRCULATION_STEP_ADDED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'DOCUMENT_RETURNED_FOR_CORRECTION';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'DOCUMENT_RESUBMITTED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SIGNATURE_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SIGNING_PIN_SET';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SIGNING_PIN_CHANGED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'DISPATCH_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'DISPATCH_ACKNOWLEDGED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'DISPATCH_STATUS_UPDATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SCHEDULE_EVENT_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SCHEDULE_EVENT_UPDATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'SCHEDULE_EVENT_CANCELLED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'MESSAGE_SENT';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ANNOUNCEMENT_CREATED';
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'ANNOUNCEMENT_DELETED';
 
+-- DropForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "annotations" DROP CONSTRAINT "annotations_registryEntryId_fkey";
+EXCEPTION
+  WHEN undefined_object THEN null;
+END $$;
 
-ALTER TYPE "AuditAction" ADD VALUE 'PA_SENT_GM_COMMUNICATION';
-ALTER TYPE "AuditAction" ADD VALUE 'REGISTRY_ENTRY_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'REGISTRY_ENTRY_UPDATED';
-ALTER TYPE "AuditAction" ADD VALUE 'REGISTRY_ENTRY_DELETED';
-ALTER TYPE "AuditAction" ADD VALUE 'ANNOTATION_ADDED';
-ALTER TYPE "AuditAction" ADD VALUE 'ANNOTATION_DELETED';
-ALTER TYPE "AuditAction" ADD VALUE 'RECORDS_FILE_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'ENTRY_ATTACHED_TO_FILE';
-ALTER TYPE "AuditAction" ADD VALUE 'ENTRY_DETACHED_FROM_FILE';
-ALTER TYPE "AuditAction" ADD VALUE 'CIRCULATION_INITIATED';
-ALTER TYPE "AuditAction" ADD VALUE 'CIRCULATION_STEP_ADDED';
-ALTER TYPE "AuditAction" ADD VALUE 'DOCUMENT_RETURNED_FOR_CORRECTION';
-ALTER TYPE "AuditAction" ADD VALUE 'DOCUMENT_RESUBMITTED';
-ALTER TYPE "AuditAction" ADD VALUE 'SIGNATURE_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'SIGNING_PIN_SET';
-ALTER TYPE "AuditAction" ADD VALUE 'SIGNING_PIN_CHANGED';
-ALTER TYPE "AuditAction" ADD VALUE 'DISPATCH_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'DISPATCH_ACKNOWLEDGED';
-ALTER TYPE "AuditAction" ADD VALUE 'DISPATCH_STATUS_UPDATED';
-ALTER TYPE "AuditAction" ADD VALUE 'SCHEDULE_EVENT_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'SCHEDULE_EVENT_UPDATED';
-ALTER TYPE "AuditAction" ADD VALUE 'SCHEDULE_EVENT_CANCELLED';
-ALTER TYPE "AuditAction" ADD VALUE 'MESSAGE_SENT';
-ALTER TYPE "AuditAction" ADD VALUE 'ANNOUNCEMENT_CREATED';
-ALTER TYPE "AuditAction" ADD VALUE 'ANNOUNCEMENT_DELETED';
+-- AlterTable "DocumentCirculation" (idempotent)
+ALTER TABLE "DocumentCirculation" ADD COLUMN IF NOT EXISTS "awaitingCorrectionFrom" INTEGER;
 
--- DropForeignKey
-ALTER TABLE "annotations" DROP CONSTRAINT "annotations_registryEntryId_fkey";
+-- AlterTable "annotations" (idempotent)
+ALTER TABLE "annotations" ADD COLUMN IF NOT EXISTS "documentId" INTEGER;
+ALTER TABLE "annotations" ADD COLUMN IF NOT EXISTS "type" TEXT NOT NULL DEFAULT 'COMMENT';
+ALTER TABLE "annotations" ALTER COLUMN "registryEntryId" DROP NOT NULL;
 
--- AlterTable
-ALTER TABLE "DocumentCirculation" ADD COLUMN     "awaitingCorrectionFrom" INTEGER;
+-- AlterTable "registry_entries" (idempotent)
+ALTER TABLE "registry_entries" ADD COLUMN IF NOT EXISTS "confidentiality" "DocConfidentiality" NOT NULL DEFAULT 'INTERNAL';
+ALTER TABLE "registry_entries" ADD COLUMN IF NOT EXISTS "recordsFileId" TEXT;
+ALTER TABLE "registry_entries" ADD COLUMN IF NOT EXISTS "retentionExpiresAt" TIMESTAMP(3);
+ALTER TABLE "registry_entries" ADD COLUMN IF NOT EXISTS "retentionPeriodMonths" INTEGER;
 
--- AlterTable
-ALTER TABLE "annotations" ADD COLUMN     "documentId" INTEGER,
-ADD COLUMN     "type" TEXT NOT NULL DEFAULT 'COMMENT',
-ALTER COLUMN "registryEntryId" DROP NOT NULL;
+-- AlterTable "users" (idempotent)
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "signingPinHash" TEXT;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "signingPinSetAt" TIMESTAMP(3);
 
--- AlterTable
-ALTER TABLE "registry_entries" ADD COLUMN     "confidentiality" "DocConfidentiality" NOT NULL DEFAULT 'INTERNAL',
-ADD COLUMN     "recordsFileId" TEXT,
-ADD COLUMN     "retentionExpiresAt" TIMESTAMP(3),
-ADD COLUMN     "retentionPeriodMonths" INTEGER;
-
--- AlterTable
-ALTER TABLE "users" ADD COLUMN     "signingPinHash" TEXT,
-ADD COLUMN     "signingPinSetAt" TIMESTAMP(3);
-
--- CreateTable
-CREATE TABLE "DocumentVersion" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "DocumentVersion" (
     "id" TEXT NOT NULL,
     "documentId" INTEGER NOT NULL,
     "versionNumber" INTEGER NOT NULL,
@@ -69,8 +70,8 @@ CREATE TABLE "DocumentVersion" (
     CONSTRAINT "DocumentVersion_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "RecordsFile" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "RecordsFile" (
     "id" TEXT NOT NULL,
     "fileNumber" TEXT NOT NULL,
     "title" TEXT NOT NULL,
@@ -84,11 +85,11 @@ CREATE TABLE "RecordsFile" (
     CONSTRAINT "RecordsFile_pkey" PRIMARY KEY ("id")
 );
 
--- Create Extension
+-- Create Extension (already idempotent)
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- CreateTable
-CREATE TABLE "DocumentEmbedding" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "DocumentEmbedding" (
     "id" TEXT NOT NULL,
     "sourceType" TEXT NOT NULL,
     "sourceId" TEXT NOT NULL,
@@ -100,8 +101,8 @@ CREATE TABLE "DocumentEmbedding" (
     CONSTRAINT "DocumentEmbedding_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "DigitalSignature" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "DigitalSignature" (
     "id" TEXT NOT NULL,
     "circulationStepId" TEXT,
     "signerId" INTEGER NOT NULL,
@@ -118,8 +119,8 @@ CREATE TABLE "DigitalSignature" (
     CONSTRAINT "DigitalSignature_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "DispatchRecord" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "DispatchRecord" (
     "id" TEXT NOT NULL,
     "dispatchNumber" TEXT NOT NULL,
     "circulationId" TEXT NOT NULL,
@@ -141,8 +142,8 @@ CREATE TABLE "DispatchRecord" (
     CONSTRAINT "DispatchRecord_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "DirectMessage" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "DirectMessage" (
     "id" TEXT NOT NULL,
     "senderId" INTEGER NOT NULL,
     "recipientId" INTEGER NOT NULL,
@@ -153,8 +154,8 @@ CREATE TABLE "DirectMessage" (
     CONSTRAINT "DirectMessage_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Announcement" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "Announcement" (
     "id" TEXT NOT NULL,
     "authorId" INTEGER NOT NULL,
     "title" TEXT NOT NULL,
@@ -165,74 +166,117 @@ CREATE TABLE "Announcement" (
     CONSTRAINT "Announcement_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "DocumentVersion_documentId_idx" ON "DocumentVersion"("documentId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "DocumentVersion_documentId_idx" ON "DocumentVersion"("documentId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "RecordsFile_fileNumber_key" ON "RecordsFile"("fileNumber");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "RecordsFile_fileNumber_key" ON "RecordsFile"("fileNumber");
 
--- CreateIndex
-CREATE INDEX "RecordsFile_fileNumber_idx" ON "RecordsFile"("fileNumber");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "RecordsFile_fileNumber_idx" ON "RecordsFile"("fileNumber");
 
--- CreateIndex
-CREATE INDEX "DocumentEmbedding_sourceType_sourceId_idx" ON "DocumentEmbedding"("sourceType", "sourceId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "DocumentEmbedding_sourceType_sourceId_idx" ON "DocumentEmbedding"("sourceType", "sourceId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "DigitalSignature_circulationStepId_key" ON "DigitalSignature"("circulationStepId");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "DigitalSignature_circulationStepId_key" ON "DigitalSignature"("circulationStepId");
 
--- CreateIndex
-CREATE INDEX "DigitalSignature_signerId_idx" ON "DigitalSignature"("signerId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "DigitalSignature_signerId_idx" ON "DigitalSignature"("signerId");
 
--- CreateIndex
-CREATE UNIQUE INDEX "DispatchRecord_dispatchNumber_key" ON "DispatchRecord"("dispatchNumber");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "DispatchRecord_dispatchNumber_key" ON "DispatchRecord"("dispatchNumber");
 
--- CreateIndex
-CREATE UNIQUE INDEX "DispatchRecord_circulationId_key" ON "DispatchRecord"("circulationId");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "DispatchRecord_circulationId_key" ON "DispatchRecord"("circulationId");
 
--- CreateIndex
-CREATE INDEX "DirectMessage_senderId_recipientId_idx" ON "DirectMessage"("senderId", "recipientId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "DirectMessage_senderId_recipientId_idx" ON "DirectMessage"("senderId", "recipientId");
 
--- CreateIndex
-CREATE INDEX "DirectMessage_recipientId_readAt_idx" ON "DirectMessage"("recipientId", "readAt");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "DirectMessage_recipientId_readAt_idx" ON "DirectMessage"("recipientId", "readAt");
 
--- AddForeignKey
-ALTER TABLE "DocumentVersion" ADD CONSTRAINT "DocumentVersion_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- AddForeignKey (idempotent via DO blocks)
+DO $$ BEGIN
+  ALTER TABLE "DocumentVersion" ADD CONSTRAINT "DocumentVersion_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DocumentVersion" ADD CONSTRAINT "DocumentVersion_uploadedById_fkey" FOREIGN KEY ("uploadedById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DocumentVersion" ADD CONSTRAINT "DocumentVersion_uploadedById_fkey" FOREIGN KEY ("uploadedById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "registry_entries" ADD CONSTRAINT "registry_entries_recordsFileId_fkey" FOREIGN KEY ("recordsFileId") REFERENCES "RecordsFile"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "registry_entries" ADD CONSTRAINT "registry_entries_recordsFileId_fkey" FOREIGN KEY ("recordsFileId") REFERENCES "RecordsFile"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "RecordsFile" ADD CONSTRAINT "RecordsFile_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "RecordsFile" ADD CONSTRAINT "RecordsFile_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "annotations" ADD CONSTRAINT "annotations_registryEntryId_fkey" FOREIGN KEY ("registryEntryId") REFERENCES "registry_entries"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "annotations" ADD CONSTRAINT "annotations_registryEntryId_fkey" FOREIGN KEY ("registryEntryId") REFERENCES "registry_entries"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "annotations" ADD CONSTRAINT "annotations_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "annotations" ADD CONSTRAINT "annotations_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "documents"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DigitalSignature" ADD CONSTRAINT "DigitalSignature_circulationStepId_fkey" FOREIGN KEY ("circulationStepId") REFERENCES "CirculationStep"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DigitalSignature" ADD CONSTRAINT "DigitalSignature_circulationStepId_fkey" FOREIGN KEY ("circulationStepId") REFERENCES "CirculationStep"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DigitalSignature" ADD CONSTRAINT "DigitalSignature_signerId_fkey" FOREIGN KEY ("signerId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DigitalSignature" ADD CONSTRAINT "DigitalSignature_signerId_fkey" FOREIGN KEY ("signerId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DocumentCirculation" ADD CONSTRAINT "DocumentCirculation_awaitingCorrectionFrom_fkey" FOREIGN KEY ("awaitingCorrectionFrom") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DocumentCirculation" ADD CONSTRAINT "DocumentCirculation_awaitingCorrectionFrom_fkey" FOREIGN KEY ("awaitingCorrectionFrom") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DispatchRecord" ADD CONSTRAINT "DispatchRecord_circulationId_fkey" FOREIGN KEY ("circulationId") REFERENCES "DocumentCirculation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DispatchRecord" ADD CONSTRAINT "DispatchRecord_circulationId_fkey" FOREIGN KEY ("circulationId") REFERENCES "DocumentCirculation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DispatchRecord" ADD CONSTRAINT "DispatchRecord_dispatchedById_fkey" FOREIGN KEY ("dispatchedById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DispatchRecord" ADD CONSTRAINT "DispatchRecord_dispatchedById_fkey" FOREIGN KEY ("dispatchedById") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DirectMessage" ADD CONSTRAINT "DirectMessage_senderId_fkey" FOREIGN KEY ("senderId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DirectMessage" ADD CONSTRAINT "DirectMessage_senderId_fkey" FOREIGN KEY ("senderId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "DirectMessage" ADD CONSTRAINT "DirectMessage_recipientId_fkey" FOREIGN KEY ("recipientId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "DirectMessage" ADD CONSTRAINT "DirectMessage_recipientId_fkey" FOREIGN KEY ("recipientId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "Announcement" ADD CONSTRAINT "Announcement_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "Announcement" ADD CONSTRAINT "Announcement_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
