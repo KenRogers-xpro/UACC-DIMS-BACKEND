@@ -53,9 +53,10 @@ model Document {
   title       String
   category    DocumentCategory
   department  Department
-  filePath    String
+  filePath    String           // original filename for uploads; "draft://<id>" placeholder for finalized drafts
   fileSize    Int?
-  publicId    String?
+  fileData    Bytes?           // the actual file content, stored in Postgres — null for draft-originated documents
+  mimeType    String?
   description String?
   status      String           @default("PRIVATE") // PRIVATE, SUBMITTED, IN_CIRCULATION, FINALIZED
   isEditable  Boolean          @default(true)       // false once submitted/circulated —

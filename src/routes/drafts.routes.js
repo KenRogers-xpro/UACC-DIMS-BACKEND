@@ -48,7 +48,6 @@ async function makeDocumentFromDraft(draft, data = {}) {
       description: draft.content,
       filePath: data.filePath || `draft://${draft.id}`,
       fileSize: null,
-      publicId: null,
       uploadedBy: draft.draftedById,
     },
     include: {

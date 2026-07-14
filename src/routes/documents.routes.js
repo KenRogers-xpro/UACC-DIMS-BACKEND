@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { logAudit } from '../lib/audit.js'
-import { uploadToCloudinary, deleteFromCloudinary } from '../lib/cloudinary.js'
 import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateRegistryNo } from '../lib/registry.js'
@@ -20,6 +19,17 @@ async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENER
       status: 'PENDING_TRIAGE',
     },
   })
+}
+
+// Files are stored directly in Postgres (fileData Bytes?) rather than a
+// third-party host — every list/detail query below selects fields
+// explicitly to keep that column out of ordinary JSON responses. Only
+// GET /:id/file selects it, to actually stream the bytes.
+const DOCUMENT_SELECT = {
+  id: true, title: true, category: true, department: true, filePath: true,
+  fileSize: true, mimeType: true, description: true, status: true,
+  isEditable: true, uploadedBy: true, createdAt: true, updatedAt: true,
+  uploader: { select: { id: true, name: true, role: true } },
 }
 
 // GET /api/documents
@@ -63,7 +73,7 @@ router.get('/', authenticate, async (req, res) => {
     const [documents, total] = await Promise.all([
       prisma.document.findMany({
         where,
-        include: { uploader: { select: { id: true, name: true, role: true } } },
+        select: DOCUMENT_SELECT,
         orderBy: { createdAt: 'desc' },
         skip:    (parseInt(page) - 1) * parseInt(limit),
         take:    parseInt(limit),
@@ -127,28 +137,19 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
       return error(res, 'Title, category, department and file are required')
     }
 
-    // Upload to Cloudinary
-    const result = await uploadToCloudinary(
-      file.buffer,
-      file.originalname,
-      file.mimetype,
-      'uacc-dims/documents'
-    )
-
     const document = await prisma.document.create({
       data: {
         title:       String(title).trim(),
         category,
         department,
         description: description ? String(description).trim() : null,
-        filePath:    result.secure_url,
-        publicId:    result.public_id,
+        filePath:    file.originalname,
+        mimeType:    file.mimetype,
+        fileData:    file.buffer,
         fileSize:    file.size,
         uploadedBy:  req.user.id,
       },
-      include: {
-        uploader: { select: { id: true, name: true, role: true } }
-      },
+      select: DOCUMENT_SELECT,
     })
 
     const isForGM = String(addressedTo || '').toUpperCase() === 'GENERAL_MANAGER'
@@ -183,7 +184,7 @@ router.get('/:id', authenticate, async (req, res) => {
     const id = parseInt(req.params.id)
     const document = await prisma.document.findUnique({
       where: { id },
-      include: { uploader: { select: { id: true, name: true, role: true } } },
+      select: DOCUMENT_SELECT,
     })
     if (!document) return notFound(res, 'Document not found')
 
@@ -203,6 +204,41 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     return success(res, document)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// GET /api/documents/:id/file — streams the actual file bytes. Requires the
+// same Bearer auth as everything else, so the frontend fetches this as a
+// blob (not a plain <img src=.../<iframe src=...> URL, which can't carry an
+// Authorization header) and renders it via an object URL.
+router.get('/:id/file', authenticate, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id)
+    const document = await prisma.document.findUnique({
+      where: { id },
+      select: { id: true, uploadedBy: true, status: true, filePath: true, mimeType: true, fileData: true },
+    })
+    if (!document || !document.fileData) return notFound(res, 'Document not found')
+
+    const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
+    const isOwner = document.uploadedBy === req.user.id
+    if (!hasBroadAccess && !isOwner) {
+      const touchedIt = document.status !== 'PRIVATE' && await prisma.documentCirculation.findFirst({
+        where: {
+          sourceType: 'DOCUMENT',
+          sourceId: String(document.id),
+          steps: { some: { OR: [{ fromRole: req.user.role }, { toRole: req.user.role }] } },
+        },
+        select: { id: true },
+      })
+      if (!touchedIt) return notFound(res, 'Document not found')
+    }
+
+    res.setHeader('Content-Type', document.mimeType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `inline; filename="${document.filePath.replace(/"/g, '')}"`)
+    return res.send(document.fileData)
   } catch (err) {
     return serverError(res, err)
   }
@@ -231,7 +267,7 @@ async function canViewDocument(document, user) {
 router.get('/:id/annotations', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const document = await prisma.document.findUnique({ where: { id } })
+    const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
     if (!(await canViewDocument(document, req.user))) return notFound(res, 'Document not found')
 
@@ -254,7 +290,7 @@ router.post('/:id/annotations', authenticate, async (req, res) => {
     const { text, type = 'COMMENT' } = req.body
     if (!text || !String(text).trim()) return error(res, 'Annotation text is required')
 
-    const document = await prisma.document.findUnique({ where: { id } })
+    const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
     if (!(await canViewDocument(document, req.user))) return notFound(res, 'Document not found')
 
@@ -288,7 +324,7 @@ router.post('/:id/annotations', authenticate, async (req, res) => {
 router.get('/:id/circulation', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const document = await prisma.document.findUnique({ where: { id } })
+    const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
     if (!(await canViewDocument(document, req.user))) return notFound(res, 'Document not found')
 
@@ -319,7 +355,7 @@ router.get('/:id/circulation', authenticate, async (req, res) => {
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const document = await prisma.document.findUnique({ where: { id } })
+    const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
 
     if (document.uploadedBy !== req.user.id) {
@@ -337,7 +373,7 @@ router.put('/:id', authenticate, async (req, res) => {
         ...(description !== undefined ? { description: description ? String(description).trim() : null } : {}),
         ...(category !== undefined ? { category } : {}),
       },
-      include: { uploader: { select: { id: true, name: true, role: true } } },
+      select: DOCUMENT_SELECT,
     })
 
     return success(res, updated, 'Document updated successfully')
@@ -366,7 +402,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
     const { toRole, instruction } = req.body
     if (!toRole) return error(res, 'toRole is required')
 
-    const document = await prisma.document.findUnique({ where: { id } })
+    const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
 
     if (document.uploadedBy !== req.user.id) {
@@ -382,6 +418,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
       const updatedDocument = await tx.document.update({
         where: { id },
         data: { status: 'SUBMITTED', isEditable: false },
+        select: DOCUMENT_SELECT,
       })
 
       const circulation = await tx.documentCirculation.create({
@@ -457,14 +494,10 @@ router.delete(
   async (req, res) => {
     try {
       const document = await prisma.document.findUnique({
-        where: { id: parseInt(req.params.id) }
+        where: { id: parseInt(req.params.id) },
+        select: DOCUMENT_SELECT,
       })
       if (!document) return notFound(res, 'Document not found')
-
-      // Delete from Cloudinary
-      if (document.publicId) {
-        await deleteFromCloudinary(document.publicId)
-      }
 
       await prisma.document.delete({ where: { id: parseInt(req.params.id) } })
       await removeDocumentEmbedding(document.id).catch(() => {})
