@@ -1,17 +1,13 @@
-import { defineConfig } from '@prisma/config'
+import { defineConfig } from 'prisma/config'
 import * as dotenv from 'dotenv'
 
-dotenv.config()
+// Load .env if present (local dev); in production DATABASE_URL is injected by Render
+dotenv.config({ override: false })
+
+const databaseUrl = process.env.DATABASE_URL
 
 export default defineConfig({
-  earlyAccess: true,
-  experimental: {
-    studio: true,
-  },
-  migrate: {
-    url: process.env.DATABASE_URL,
-  },
-  studio: {
-    url: process.env.DATABASE_URL,
-  }
+  schema: 'prisma/schema.prisma',
+  // Only set migrate.url if DATABASE_URL is available (not required for `prisma generate`)
+  ...(databaseUrl ? { migrate: { url: databaseUrl } } : {}),
 })
