@@ -47,6 +47,13 @@ const limiter = rateLimit({
 	windowMs: 15 * 60 * 1000, // 15 minutes
 	max: 100,
 	message: { success: false, message: 'Too many requests. Please try again later.' },
+	skip: (req) => {
+		const path = req.originalUrl || req.url;
+		return path.startsWith('/api/messages') || 
+		       path.startsWith('/api/announcements') || 
+		       path.startsWith('/api/users/online-status') ||
+		       path.startsWith('/api/ai'); // AI has its own limiter
+	}
 })
 app.use('/api/', limiter)
 

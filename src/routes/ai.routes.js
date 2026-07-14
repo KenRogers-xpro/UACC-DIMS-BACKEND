@@ -69,13 +69,58 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     const ragContext = await buildRagContext(messages, req.user)
-    const augmentedMessages = ragContext
-      ? [{ role: 'system', text: ragContext }, ...messages]
-      : messages
+    
+    const systemPrompt = `You are an AI assistant in the UACC Document & Information Management System (DIMS).
+When a user asks you to "draft a memo", "write a letter", "compose a report", or similar, you MUST use the draftDocument tool to create the draft.
+Generate well-structured document content (clear subject line, To/From/Date/Ref/Subject structure where appropriate) and call the tool.
+IMPORTANT: After calling the tool, your response MUST state clearly that this is a draft requiring human review before submission — never imply the document is finalized. Tell the user to go to their My Drafts to review it.`
+
+    const augmentedMessages = [
+      { role: 'system', text: systemPrompt },
+      ...(ragContext ? [{ role: 'system', text: ragContext }] : []),
+      ...messages
+    ]
+
+    const tools = [
+      {
+        functionDeclarations: [
+          {
+            name: 'draftDocument',
+            description: 'Drafts a new document with the provided title and content. This document will be saved in the user\'s Drafts and requires human review.',
+            parameters: {
+              type: 'OBJECT',
+              properties: {
+                title: { type: 'STRING', description: 'The title of the drafted document' },
+                content: { type: 'STRING', description: 'The full text content of the document (use markdown or clear structure)' },
+                purpose: { type: 'STRING', description: 'The purpose of the document' }
+              },
+              required: ['title', 'content']
+            }
+          }
+        ]
+      }
+    ]
 
     // Call Gemini via client wrapper
-    const aiResp = await generateFromMessages(augmentedMessages)
+    const aiResp = await generateFromMessages(augmentedMessages, tools)
+    
     if (aiResp && aiResp.success) {
+      if (aiResp.functionCall && aiResp.functionCall.name === 'draftDocument') {
+        const { title, content } = aiResp.functionCall.args
+        const draft = await prisma.draftDocument.create({
+          data: {
+            title: String(title).trim(),
+            content: String(content).trim(),
+            origin: 'AI_GENERATED',
+            draftedById: req.user.id,
+            status: 'DRAFT',
+          }
+        })
+        
+        const responseText = `I've created a draft titled "[${draft.title}]". You can find it in your Drafts to review and edit before submitting. DRAFT_CREATED_ID:${draft.id}`
+        return success(res, { provider: 'gemini', response: { success: true, text: responseText } })
+      }
+
       return success(res, { provider: 'gemini', response: aiResp })
     }
 

@@ -28,13 +28,34 @@ function maskKey(k = '') {
   return `${k.slice(0,4)}...${k.slice(-4)}`
 }
 
-export async function generateFromMessages(messages = []) {
-  if (!model) throw new Error('AI model not initialized')
-  const prompt = messages.map(m => `${m.role}: ${m.text}`).join('\n')
+export async function generateFromMessages(messages = [], tools = []) {
+  if (!genai) throw new Error('AI client not initialized')
+  
+  // Use a model instance with tools if provided
+  const currentModel = tools && tools.length > 0
+    ? genai.getGenerativeModel({ model: MODEL, tools })
+    : model
+
+  if (!currentModel) throw new Error('AI model not initialized')
+
+  // Convert messages to Gemini format (user/model)
+  const history = messages.slice(0, -1).map(m => ({
+    role: m.role === 'ai' ? 'model' : 'user',
+    parts: [{ text: m.text }]
+  }))
+  const lastMessage = messages[messages.length - 1]?.text || ''
+
   try {
-    const chat = model.startChat()
-    const result = await chat.sendMessage(prompt)
-    // SDK provides helpers: response.text()
+    const chat = currentModel.startChat({ history })
+    const result = await chat.sendMessage(lastMessage)
+    
+    // Check if the model decided to call a function
+    const functionCalls = result?.response?.functionCalls && result.response.functionCalls()
+    if (functionCalls && functionCalls.length > 0) {
+      return { success: true, functionCall: functionCalls[0], raw: result }
+    }
+
+    // Otherwise, return text
     const text = result && result.response && typeof result.response.text === 'function'
       ? result.response.text()
       : JSON.stringify(result)

@@ -14,6 +14,16 @@ router.post('/', async (req, res) => {
     const { title, sourceType, sourceId, toRole, instruction } = req.body
     const originatorId = req.user.id
 
+    if (sourceType === 'DRAFT_DOCUMENT') {
+      const draft = await prisma.draftDocument.findUnique({ where: { id: sourceId } })
+      if (!draft) {
+        return res.status(404).json({ success: false, message: 'Draft not found' })
+      }
+      if (draft.origin === 'AI_GENERATED' && !draft.reviewedAt) {
+        return res.status(403).json({ success: false, message: 'This AI-drafted document must be reviewed before it can be submitted. Open it, review the content, and click Confirm Review.' })
+      }
+    }
+
     const circulation = await prisma.$transaction(async (tx) => {
       return await tx.documentCirculation.create({
         data: {

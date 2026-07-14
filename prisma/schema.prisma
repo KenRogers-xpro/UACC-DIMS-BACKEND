@@ -364,6 +364,8 @@ model DraftDocument {
   id          String   @id @default(cuid())
   title       String
   content     String   @db.Text
+  origin      String   @default("HUMAN") // "HUMAN" or "AI_GENERATED"
+  reviewedAt  DateTime?
   draftedById Int
   draftedBy   User     @relation("DraftAuthor", fields: [draftedById], references: [id])
   status      String   @default("DRAFT") // DRAFT, PENDING_GM_REVIEW, GM_APPROVED, GM_REJECTED, FINALIZED

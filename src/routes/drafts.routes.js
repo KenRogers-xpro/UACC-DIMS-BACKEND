@@ -90,7 +90,7 @@ router.get('/summary', authenticate, authorize(['GM_PERSONAL_ASSISTANT', 'GENERA
 })
 
 // POST /api/drafts
-router.post('/', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   try {
     const { title, content } = req.body
 
@@ -102,6 +102,7 @@ router.post('/', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req,
       data: {
         title: String(title).trim(),
         content: String(content).trim(),
+        origin: 'HUMAN',
         draftedById: req.user.id,
         status: 'DRAFT',
       },
@@ -114,11 +115,93 @@ router.post('/', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req,
       userId: req.user.id,
       action: 'DRAFT_CREATED',
       module: 'Drafts',
-      description: `Drafted by PA: created draft "${draft.title}" createdById=${req.user.id}`,
+      description: `Drafted by ${req.user.role}: created draft "${draft.title}" createdById=${req.user.id}`,
       ipAddress: req.ip,
     })
 
     return success(res, draft, 'Draft created successfully', 201)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// GET /api/drafts/mine
+router.get('/mine', authenticate, async (req, res) => {
+  try {
+    const drafts = await prisma.draftDocument.findMany({
+      where: { draftedById: req.user.id },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        draftedBy: { select: { id: true, name: true, role: true } },
+      },
+    })
+    return success(res, drafts)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/drafts/:id
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const { title, content } = req.body
+    
+    const draft = await prisma.draftDocument.findUnique({
+      where: { id: req.params.id },
+    })
+
+    if (!draft) return notFound(res, 'Draft not found')
+    if (draft.draftedById !== req.user.id) {
+      return error(res, 'You can only edit your own drafts', 403)
+    }
+    if (draft.status !== 'DRAFT') {
+      return error(res, 'Only DRAFT drafts can be edited', 409)
+    }
+
+    const updated = await prisma.draftDocument.update({
+      where: { id: req.params.id },
+      data: {
+        title: title ? String(title).trim() : undefined,
+        content: content !== undefined ? String(content).trim() : undefined,
+        reviewedAt: new Date(),
+      },
+      include: {
+        draftedBy: { select: { id: true, name: true, role: true } },
+      },
+    })
+
+    return success(res, updated, 'Draft updated successfully')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/drafts/:id/confirm-review
+router.put('/:id/confirm-review', authenticate, async (req, res) => {
+  try {
+    const draft = await prisma.draftDocument.findUnique({
+      where: { id: req.params.id },
+    })
+
+    if (!draft) return notFound(res, 'Draft not found')
+    if (draft.draftedById !== req.user.id) {
+      return error(res, 'You can only review your own drafts', 403)
+    }
+    if (draft.status !== 'DRAFT') {
+      return error(res, 'Only DRAFT drafts can be reviewed', 409)
+    }
+
+    const updated = await prisma.draftDocument.update({
+      where: { id: req.params.id },
+      data: {
+        reviewedAt: new Date(),
+      },
+      include: {
+        draftedBy: { select: { id: true, name: true, role: true } },
+      },
+    })
+
+    return success(res, updated, 'Draft review confirmed successfully')
   } catch (err) {
     return serverError(res, err)
   }
@@ -139,6 +222,10 @@ router.put('/:id/submit', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), as
 
     if (draft.status !== 'DRAFT') {
       return error(res, 'Only DRAFT drafts can be submitted', 409)
+    }
+
+    if (draft.origin === 'AI_GENERATED' && !draft.reviewedAt) {
+      return error(res, 'This AI-drafted document must be reviewed before it can be submitted. Open it, review the content, and click Confirm Review.', 403)
     }
 
     const updated = await prisma.draftDocument.update({
