@@ -20,6 +20,8 @@ import paRoutes from './routes/pa.routes.js'
 import aiRoutes from './routes/ai.routes.js'
 import dashboardRoutes from './routes/dashboard.routes.js'
 import circulationRoutes from './routes/circulation.routes.js'
+import messageRoutes from './routes/messages.routes.js'
+import announcementRoutes from './routes/announcements.routes.js'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -55,6 +57,15 @@ const aiLimiter = rateLimit({
 	message: { success: false, message: 'AI rate limit reached. Please wait a moment.' },
 })
 
+// Messages/announcements poll every 5-30s from the frontend, which would
+// blow through the global 100-per-15-min limit on its own — give them their
+// own more generous window instead of fighting it.
+const pollingLimiter = rateLimit({
+	windowMs: 60 * 1000,
+	max: 60,
+	message: { success: false, message: 'Too many requests. Please wait a moment.' },
+})
+
 // ── ROUTES ───────────────────────────────────────────────────────────────────
 
 app.get('/health', (req, res) => {
@@ -79,6 +90,8 @@ app.use('/api/pa', paRoutes)
 app.use('/api/ai', aiLimiter, aiRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/circulation', circulationRoutes)
+app.use('/api/messages', pollingLimiter, messageRoutes)
+app.use('/api/announcements', pollingLimiter, announcementRoutes)
 
 // 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)
 

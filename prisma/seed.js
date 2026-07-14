@@ -20,7 +20,7 @@ async function main() {
     { name: 'Procurement Officer',     email: 'procurement.officer@uacc.go.ug', role: 'PROCUREMENT_OFFICER',  department: 'FINANCE_AND_ADMINISTRATION' },
     { name: 'HR Manager',              email: 'hr@uacc.go.ug',                 role: 'HR_MANAGER',            department: 'HUMAN_RESOURCES' },
     { name: 'Finance Director',        email: 'finance.director@uacc.go.ug',   role: 'FINANCE_DIRECTOR',      department: 'FINANCE_AND_ACCOUNTS' },
-    { name: 'Accounts Officer',        email: 'accounts@uacc.go.ug',           role: 'ACCOUNTS_OFFICER',      department: 'FINANCE_AND_ACCOUNTS' },
+    { name: 'Corporation Secretary',   email: 'corporation.secretary@uacc.go.ug', role: 'CORPORATION_SECRETARY', department: 'GENERAL_MANAGER_OFFICE' },
     { name: 'Marketing Officer',       email: 'marketing@uacc.go.ug',          role: 'MARKETING_OFFICER',     department: 'MARKETING' },
     { name: 'PA to GM',                email: 'pa.gm@uacc.go.ug',              role: 'GM_PERSONAL_ASSISTANT', department: 'GENERAL_MANAGER_OFFICE' },
   ];
