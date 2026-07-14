@@ -32,10 +32,59 @@ const DOCUMENT_SELECT = {
   uploader: { select: { id: true, name: true, role: true } },
 }
 
+const NEW_ARRIVAL_WINDOW_MS = 48 * 60 * 60 * 1000
+
+// Builds a Prisma `where` fragment for the "state" tab filter on the
+// Documents page: NEW (just landed with this role), PENDING (awaiting this
+// role's action, or the user's own unsubmitted drafts), IN_CIRCULATION
+// (circulating but with someone else right now), STORED (circulation
+// closed). Reuses DocumentCirculation rather than adding new endpoints —
+// sourceId is a polymorphic string column, not a Prisma relation, so this
+// resolves matching document IDs first and filters on those.
+async function buildStateFilter(state, user) {
+  if (!state) return {}
+
+  if (state === 'NEW' || state === 'PENDING') {
+    const myCirculations = await prisma.documentCirculation.findMany({
+      where: { sourceType: 'DOCUMENT', currentHolderRole: user.role, status: 'IN_CIRCULATION' },
+      select: { sourceId: true, updatedAt: true },
+    })
+    const isRecent = (c) => (Date.now() - new Date(c.updatedAt).getTime()) < NEW_ARRIVAL_WINDOW_MS
+    const ids = myCirculations
+      .filter((c) => (state === 'NEW' ? isRecent(c) : !isRecent(c)))
+      .map((c) => parseInt(c.sourceId, 10))
+      .filter(Number.isInteger)
+
+    if (state === 'PENDING') {
+      // Your own not-yet-submitted drafts are also "pending your action".
+      return { OR: [{ id: { in: ids } }, { status: 'PRIVATE', uploadedBy: user.id }] }
+    }
+    return { id: { in: ids } }
+  }
+
+  if (state === 'IN_CIRCULATION') {
+    const elsewhere = await prisma.documentCirculation.findMany({
+      where: { sourceType: 'DOCUMENT', status: 'IN_CIRCULATION', currentHolderRole: { not: user.role } },
+      select: { sourceId: true },
+    })
+    return { id: { in: elsewhere.map((c) => parseInt(c.sourceId, 10)).filter(Number.isInteger) } }
+  }
+
+  if (state === 'STORED') {
+    const closed = await prisma.documentCirculation.findMany({
+      where: { sourceType: 'DOCUMENT', status: 'CLOSED' },
+      select: { sourceId: true },
+    })
+    return { id: { in: closed.map((c) => parseInt(c.sourceId, 10)).filter(Number.isInteger) } }
+  }
+
+  return {}
+}
+
 // GET /api/documents
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { search = '', category = '', department = '', page = 1, limit = 8 } = req.query
+    const { search = '', category = '', department = '', page = 1, limit = 8, state = '' } = req.query
 
     // Module-history-based access:
     //  - RECORDS_EXECUTIVE / GENERAL_MANAGER: broad access, see everything.
@@ -61,12 +110,15 @@ router.get('/', authenticate, async (req, res) => {
       visibility = { OR: [{ uploadedBy: req.user.id }, { id: { in: touchedDocumentIds } }] }
     }
 
+    const stateFilter = await buildStateFilter(state.toUpperCase(), req.user)
+
     const where = {
       AND: [
         search     ? { title:      { contains: search,     mode: 'insensitive' } } : {},
         category   ? { category }   : {},
         department ? { department } : {},
         visibility,
+        stateFilter,
       ],
     }
 

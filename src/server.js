@@ -22,6 +22,7 @@ import dashboardRoutes from './routes/dashboard.routes.js'
 import circulationRoutes from './routes/circulation.routes.js'
 import messageRoutes from './routes/messages.routes.js'
 import announcementRoutes from './routes/announcements.routes.js'
+import notificationRoutes from './routes/notifications.routes.js'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -49,8 +50,9 @@ const limiter = rateLimit({
 	message: { success: false, message: 'Too many requests. Please try again later.' },
 	skip: (req) => {
 		const path = req.originalUrl || req.url;
-		return path.startsWith('/api/messages') || 
-		       path.startsWith('/api/announcements') || 
+		return path.startsWith('/api/messages') ||
+		       path.startsWith('/api/announcements') ||
+		       path.startsWith('/api/notifications') ||
 		       path.startsWith('/api/users/online-status') ||
 		       path.startsWith('/api/ai'); // AI has its own limiter
 	}
@@ -99,6 +101,7 @@ app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/circulation', circulationRoutes)
 app.use('/api/messages', pollingLimiter, messageRoutes)
 app.use('/api/announcements', pollingLimiter, announcementRoutes)
+app.use('/api/notifications', pollingLimiter, notificationRoutes)
 
 // 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)
 
