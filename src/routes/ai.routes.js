@@ -2,8 +2,55 @@ import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { success, error, serverError } from '../lib/response.js'
 import { generateFromMessages, hasKey, getKeyDiagnostics, checkKeyWithTestCall } from '../lib/ai.js'
+import { prisma } from '../lib/prisma.js'
+import { semanticSearchDocuments } from '../lib/embeddings.js'
 
 const router = Router()
+
+// Retrieves the documents relevant to the latest user message, scoped to
+// what this user can actually see (same rule as GET /api/documents), and
+// renders them as a context block the model is told to cite from. Never
+// throws — retrieval failure (e.g. embeddings not configured) degrades to
+// no context rather than breaking the chat.
+async function buildRagContext(messages, user) {
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+  if (!lastUserMessage?.text?.trim()) return ''
+
+  try {
+    const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(user.role)
+    let touchedDocumentIds = new Set()
+    if (!hasBroadAccess) {
+      const touchedCirculations = await prisma.documentCirculation.findMany({
+        where: {
+          sourceType: 'DOCUMENT',
+          steps: { some: { OR: [{ fromRole: user.role }, { toRole: user.role }] } },
+        },
+        select: { sourceId: true },
+      })
+      touchedDocumentIds = new Set(touchedCirculations.map((c) => parseInt(c.sourceId, 10)))
+    }
+
+    const candidates = await semanticSearchDocuments(lastUserMessage.text, 15)
+    const visible = candidates
+      .filter((doc) => hasBroadAccess || doc.uploadedBy === user.id || touchedDocumentIds.has(doc.id))
+      .slice(0, 5)
+
+    if (visible.length === 0) return ''
+
+    const entries = visible.map((doc) =>
+      `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})${doc.description ? `: ${doc.description}` : ''}`
+    ).join('\n')
+
+    return [
+      'The following documents from the DIMS system may be relevant to the user\'s question.',
+      'Cite them by title and Document # when you use them. Do not mention documents not listed here.',
+      entries,
+    ].join('\n')
+  } catch (err) {
+    console.error('RAG retrieval failed, continuing without context:', err.message)
+    return ''
+  }
+}
 
 router.post('/', authenticate, async (req, res) => {
   try {
@@ -21,8 +68,13 @@ router.post('/', authenticate, async (req, res) => {
       return error(res, 'Gemini API key is not set', { diagnostics: getKeyDiagnostics() })
     }
 
+    const ragContext = await buildRagContext(messages, req.user)
+    const augmentedMessages = ragContext
+      ? [{ role: 'system', text: ragContext }, ...messages]
+      : messages
+
     // Call Gemini via client wrapper
-    const aiResp = await generateFromMessages(messages)
+    const aiResp = await generateFromMessages(augmentedMessages)
     if (aiResp && aiResp.success) {
       return success(res, { provider: 'gemini', response: aiResp })
     }

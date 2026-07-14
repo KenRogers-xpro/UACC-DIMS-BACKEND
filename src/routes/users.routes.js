@@ -145,4 +145,59 @@ router.patch('/:id', authenticate, authorize('IT_ADMINISTRATOR'), async (req, re
   }
 })
 
+// GET /api/users/me/signing-pin-status — does the logged-in user have a
+// signing PIN set yet? (Needed before they can sign anything.)
+router.get('/me/signing-pin-status', authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { signingPinHash: true, signingPinSetAt: true },
+    })
+    return success(res, {
+      hasPinSet: Boolean(user?.signingPinHash),
+      setAt: user?.signingPinSetAt || null,
+    })
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// POST /api/users/me/signing-pin — set or change your own signing PIN.
+// Requires the account login password to confirm identity (this is the
+// "high-stakes action" case the DigitalSignature.verifiedWithPassword field
+// anticipates) since the PIN itself is what will later authorize signatures.
+router.post('/me/signing-pin', authenticate, async (req, res) => {
+  try {
+    const { newPin, password } = req.body
+    if (!/^\d{4,6}$/.test(String(newPin || ''))) {
+      return error(res, 'PIN must be 4 to 6 digits')
+    }
+    if (!password) {
+      return error(res, 'Your account password is required to set a signing PIN')
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } })
+    const passwordMatch = await bcrypt.compare(String(password), user.password)
+    if (!passwordMatch) return error(res, 'Incorrect password', 401)
+
+    const signingPinHash = await bcrypt.hash(String(newPin), 12)
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { signingPinHash, signingPinSetAt: new Date() },
+    })
+
+    await logAudit({
+      userId:      req.user.id,
+      action:      user.signingPinHash ? 'SIGNING_PIN_CHANGED' : 'SIGNING_PIN_SET',
+      module:      'Account Security',
+      description: `${req.user.name} ${user.signingPinHash ? 'changed' : 'set'} their signing PIN`,
+      ipAddress:   req.ip,
+    })
+
+    return success(res, { hasPinSet: true }, 'Signing PIN saved')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
 export default router

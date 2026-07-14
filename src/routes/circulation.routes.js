@@ -1,4 +1,6 @@
 import express from 'express'
+import crypto from 'crypto'
+import bcrypt from 'bcryptjs'
 import { authenticate } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
 
@@ -120,6 +122,95 @@ router.post('/:id/step', async (req, res) => {
     return res.status(201).json({ success: true, step })
   } catch (error) {
     console.error('Error adding circulation step:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// POST /api/circulation/:id/sign - Add a step AND a real, PIN-verified
+// DigitalSignature in one action (the "Add Signature" flow from SigningModal)
+router.post('/:id/sign', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { pin, toRole, instruction, stepType, decision, amount } = req.body
+
+    if (!pin) return res.status(400).json({ success: false, message: 'PIN is required' })
+
+    const signer = await prisma.user.findUnique({ where: { id: req.user.id } })
+    if (!signer.signingPinHash) {
+      return res.status(400).json({ success: false, message: 'You need to set a signing PIN before you can sign.', code: 'NO_PIN_SET' })
+    }
+    const pinMatch = await bcrypt.compare(String(pin), signer.signingPinHash)
+    if (!pinMatch) {
+      return res.status(401).json({ success: false, message: 'Incorrect PIN', code: 'INCORRECT_PIN' })
+    }
+
+    const existingCirculation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: {
+        steps: {
+          orderBy: { stepNumber: 'desc' },
+          take: 1,
+          include: { signature: true },
+        },
+      },
+    })
+    if (!existingCirculation) {
+      return res.status(404).json({ success: false, message: 'Circulation not found' })
+    }
+    if (req.user.role !== existingCirculation.currentHolderRole) {
+      return res.status(403).json({ success: false, message: 'You are not the current holder of this document' })
+    }
+
+    const previousHash = existingCirculation.steps[0]?.signature?.signatureHash || null
+    const nextStepNumber = existingCirculation.steps.length > 0
+      ? existingCirculation.steps[0].stepNumber + 1
+      : 1
+    const newStatus = stepType === 'FINAL_DECISION' ? 'CLOSED' : 'IN_CIRCULATION'
+    const signedAt = new Date()
+    const signatureHash = crypto
+      .createHash('sha256')
+      .update(`${req.user.id}:${decision || ''}:${signedAt.toISOString()}:${previousHash || ''}`)
+      .digest('hex')
+
+    const step = await prisma.$transaction(async (tx) => {
+      await tx.documentCirculation.update({
+        where: { id },
+        data: { currentHolderRole: toRole, status: newStatus },
+      })
+
+      return tx.circulationStep.create({
+        data: {
+          circulationId: id,
+          stepNumber: nextStepNumber,
+          fromUserId: req.user.id,
+          fromRole: req.user.role,
+          toRole,
+          instruction,
+          stepType,
+          decision,
+          amount: amount ? Number(amount) : null,
+          signedAt,
+          recordsCopies: { create: { status: 'PENDING_FILING' } },
+          signature: {
+            create: {
+              signerId: req.user.id,
+              signerRole: req.user.role,
+              decision: decision || stepType,
+              verifiedWithPin: true,
+              previousHash,
+              signatureHash,
+              ipAddress: req.ip,
+              signedAt,
+            },
+          },
+        },
+        include: { recordsCopies: true, signature: true },
+      })
+    })
+
+    return res.status(201).json({ success: true, step })
+  } catch (error) {
+    console.error('Error signing circulation step:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })

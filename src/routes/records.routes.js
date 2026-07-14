@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js'
 import { logAudit } from '../lib/audit.js'
 import { success, error, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { generateRegistryNo } from '../lib/registry.js'
 
 const router = Router()
 
@@ -15,21 +16,6 @@ async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENER
       status: 'PENDING_TRIAGE',
     },
   })
-}
-
-async function generateRegistryNo() {
-  const year = new Date().getFullYear()
-  const prefix = `UACC-REG-${year}-`
-
-  const latest = await prisma.registryEntry.findFirst({
-    where: { registryNo: { startsWith: prefix } },
-    orderBy: { createdAt: 'desc' },
-  })
-
-  if (!latest) return `${prefix}0001`
-
-  const lastNum = parseInt(latest.registryNo.split('-').pop(), 10)
-  return `${prefix}${String(lastNum + 1).padStart(4, '0')}`
 }
 
 // GET /api/records

@@ -57,6 +57,9 @@ model Document {
   fileSize    Int?
   publicId    String?
   description String?
+  status      String           @default("PRIVATE") // PRIVATE, SUBMITTED, IN_CIRCULATION, FINALIZED
+  isEditable  Boolean          @default(true)       // false once submitted/circulated —
+                                                     // ties into the immutability rule from circulation
   uploadedBy  Int
   uploader    User             @relation(fields: [uploadedBy], references: [id])
   createdAt   DateTime         @default(now())
@@ -64,6 +67,7 @@ model Document {
 
   annotations Annotation[]
   versions    DocumentVersion[]
+  registryEntries RegistryEntry[]
 
   @@map("documents")
 }
@@ -166,6 +170,12 @@ model RegistryEntry {
   // Entity-file / dossier linkage — Records Executive's discretion, nullable
   recordsFileId    String?
   recordsFile      RecordsFile?   @relation(fields: [recordsFileId], references: [id])
+
+  // Bridge: registry entries auto-created from an uploaded Document (see
+  // documents.routes.js POST / and POST /:id/submit), nullable since manually
+  // registered physical/email correspondence has no source Document.
+  sourceDocumentId Int?
+  sourceDocument   Document?      @relation(fields: [sourceDocumentId], references: [id])
 
   dateRegistered   DateTime
   dateDispatched   DateTime?
