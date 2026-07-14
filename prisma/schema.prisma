@@ -19,6 +19,7 @@ model User {
   isActive    Boolean    @default(true)
   signingPinHash   String?   // bcrypt-hashed 4-6 digit signing PIN, separate from login password
   signingPinSetAt  DateTime?
+  lastSeenAt  DateTime?  // updated on every authenticated request; isOnline is derived from this, not stored
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 

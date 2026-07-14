@@ -28,6 +28,15 @@ export async function authenticate(req, res, next) {
     }
 
     req.user = user
+
+    // Fire-and-forget "last seen" tracking — piggybacks on requests that are
+    // already happening, no extra round trip. Never blocks the response,
+    // and a failure here shouldn't fail the request it's riding on.
+    prisma.user.update({
+      where: { id: user.id },
+      data: { lastSeenAt: new Date() },
+    }).catch((err) => console.error('Failed to update lastSeenAt:', err.message))
+
     next()
   } catch (error) {
     return res.status(401).json({

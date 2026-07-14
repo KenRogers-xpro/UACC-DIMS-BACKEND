@@ -1,11 +1,44 @@
 import { Router } from 'express'
+import crypto from 'crypto'
 import bcrypt from 'bcryptjs'
 import { prisma } from '../lib/prisma.js'
 import { logAudit } from '../lib/audit.js'
 import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { sendWelcomeEmail, sendPasswordResetEmail } from '../lib/email.js'
 
 const router = Router()
+
+const ONLINE_WINDOW_MS = 5 * 60 * 1000
+
+function generateTempPassword() {
+  // 12 random hex chars — not shown in any API response, only emailed
+  // (via the stubbed sender, see lib/email.js) and logged server-side.
+  return crypto.randomBytes(9).toString('hex')
+}
+
+// GET /api/users/online-status — who's currently active, company-wide.
+// Low-sensitivity data (just "is this person online right now"), so open
+// to any authenticated role rather than IT Admin/GM only.
+router.get('/online-status', authenticate, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, role: true, lastSeenAt: true },
+    })
+    const now = Date.now()
+    const withStatus = users.map((u) => ({
+      ...u,
+      isOnline: u.lastSeenAt ? (now - new Date(u.lastSeenAt).getTime()) < ONLINE_WINDOW_MS : false,
+    }))
+    return success(res, {
+      users: withStatus,
+      onlineCount: withStatus.filter((u) => u.isOnline).length,
+    })
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
 
 // GET /api/users
 router.get('/', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
@@ -30,18 +63,24 @@ router.get('/', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) =>
       where,
       select: {
         id: true, name: true, email: true, role: true,
-        department: true, isActive: true, createdAt: true,
+        department: true, isActive: true, createdAt: true, lastSeenAt: true,
       },
       orderBy: { createdAt: 'asc' },
     })
 
-    return success(res, users)
+    const now = Date.now()
+    const withStatus = users.map((u) => ({
+      ...u,
+      isOnline: u.lastSeenAt ? (now - new Date(u.lastSeenAt).getTime()) < ONLINE_WINDOW_MS : false,
+    }))
+
+    return success(res, withStatus)
   } catch (err) {
     return serverError(res, err)
   }
 })
 
-// POST /api/users
+// POST /api/users — create user
 router.post('/', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
   try {
     const { name, email, password, role, department } = req.body
@@ -84,46 +123,31 @@ router.post('/', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) =
       ipAddress:   req.ip,
     })
 
+    sendWelcomeEmail(user, password).catch((err) => console.error('sendWelcomeEmail failed:', err.message))
+
     return success(res, user, 'User created successfully', 201)
   } catch (err) {
     return serverError(res, err)
   }
 })
 
-// PATCH /api/users/:id
-router.patch('/:id', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
+// PUT /api/users/:id — edit name/role/department. Not password — that's
+// PUT /:id/reset-password below.
+router.put('/:id', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
   try {
-    const { action, name, role, department, password, isActive } = req.body
     const targetId = parseInt(req.params.id)
+    const { name, role, department } = req.body
 
     const user = await prisma.user.findUnique({ where: { id: targetId } })
     if (!user) return notFound(res, 'User not found')
 
-    if (targetId === req.user.id && isActive === false) {
-      return error(res, 'You cannot deactivate your own account')
-    }
-
-    let updateData = {}
-    let auditDesc  = ''
-
-    if (action === 'TOGGLE_STATUS') {
-      updateData = { isActive: !user.isActive }
-      auditDesc  = `${!user.isActive ? 'Activated' : 'Deactivated'} user: ${user.name}`
-    } else if (action === 'UPDATE_PROFILE') {
-      updateData = {
+    const updated = await prisma.user.update({
+      where: { id: targetId },
+      data: {
         name:       name       || user.name,
         role:       role       || user.role,
         department: department || user.department,
-      }
-      if (password && password.length >= 6) {
-        updateData.password = await bcrypt.hash(password, 12)
-      }
-      auditDesc = `Updated user: ${user.name}`
-    }
-
-    const updated = await prisma.user.update({
-      where: { id: targetId },
-      data:  updateData,
+      },
       select: {
         id: true, name: true, email: true,
         role: true, department: true, isActive: true,
@@ -132,14 +156,107 @@ router.patch('/:id', authenticate, authorize('IT_ADMINISTRATOR'), async (req, re
 
     await logAudit({
       userId:      req.user.id,
-      action:      action === 'TOGGLE_STATUS' && !user.isActive
-        ? 'USER_DEACTIVATED' : 'USER_UPDATED',
+      action:      'USER_UPDATED',
       module:      'User Management',
-      description: auditDesc,
+      description: `Updated user: ${user.name}`,
       ipAddress:   req.ip,
     })
 
     return success(res, updated, 'User updated successfully')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/users/:id/deactivate — isActive: false only. Never deletes —
+// historical circulation steps, signatures, and audit logs stay intact and
+// keep referencing this user.
+router.put('/:id/deactivate', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    if (targetId === req.user.id) {
+      return error(res, 'You cannot deactivate your own account')
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: targetId } })
+    if (!user) return notFound(res, 'User not found')
+
+    const updated = await prisma.user.update({
+      where: { id: targetId },
+      data: { isActive: false },
+      select: { id: true, name: true, email: true, role: true, department: true, isActive: true },
+    })
+
+    await logAudit({
+      userId:      req.user.id,
+      action:      'USER_DEACTIVATED',
+      module:      'User Management',
+      description: `Deactivated user: ${user.name}`,
+      ipAddress:   req.ip,
+    })
+
+    return success(res, updated, 'User deactivated')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/users/:id/reactivate
+router.put('/:id/reactivate', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const user = await prisma.user.findUnique({ where: { id: targetId } })
+    if (!user) return notFound(res, 'User not found')
+
+    const updated = await prisma.user.update({
+      where: { id: targetId },
+      data: { isActive: true },
+      select: { id: true, name: true, email: true, role: true, department: true, isActive: true },
+    })
+
+    await logAudit({
+      userId:      req.user.id,
+      action:      'USER_UPDATED',
+      module:      'User Management',
+      description: `Reactivated user: ${user.name}`,
+      ipAddress:   req.ip,
+    })
+
+    return success(res, updated, 'User reactivated')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/users/:id/reset-password — IT Admin triggers a reset. The new
+// temp password is never returned in this response; it's only sent via
+// sendPasswordResetEmail (see lib/email.js for what that actually does
+// right now — no real provider wired up yet).
+router.put('/:id/reset-password', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id)
+    const user = await prisma.user.findUnique({ where: { id: targetId } })
+    if (!user) return notFound(res, 'User not found')
+
+    const tempPassword = generateTempPassword()
+    const hashedPassword = await bcrypt.hash(tempPassword, 12)
+
+    await prisma.user.update({
+      where: { id: targetId },
+      data: { password: hashedPassword },
+    })
+
+    await logAudit({
+      userId:      req.user.id,
+      action:      'USER_UPDATED',
+      module:      'User Management',
+      description: `Reset password for user: ${user.name}`,
+      ipAddress:   req.ip,
+    })
+
+    sendPasswordResetEmail(user, tempPassword).catch((err) => console.error('sendPasswordResetEmail failed:', err.message))
+
+    return success(res, null, 'Password reset — new credentials sent to the user')
   } catch (err) {
     return serverError(res, err)
   }
