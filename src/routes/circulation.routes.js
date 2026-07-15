@@ -177,9 +177,15 @@ router.post('/:id/sign', async (req, res) => {
       : 1
     const newStatus = stepType === 'FINAL_DECISION' ? 'CLOSED' : 'IN_CIRCULATION'
     const signedAt = new Date()
+    // resolvedDecision must be the exact value stored on the signature row
+    // below (decision || stepType) — hashing the raw `decision` instead
+    // would make GET /:id/verify-integrity's recomputation mismatch for
+    // every step with no explicit decision (plain forwards), since it can
+    // only recompute from what's actually in the DB.
+    const resolvedDecision = decision || stepType
     const signatureHash = crypto
       .createHash('sha256')
-      .update(`${req.user.id}:${decision || ''}:${signedAt.toISOString()}:${previousHash || ''}`)
+      .update(`${req.user.id}:${resolvedDecision}:${signedAt.toISOString()}:${previousHash || ''}`)
       .digest('hex')
 
     const step = await prisma.$transaction(async (tx) => {
@@ -205,7 +211,7 @@ router.post('/:id/sign', async (req, res) => {
             create: {
               signerId: req.user.id,
               signerRole: req.user.role,
-              decision: decision || stepType,
+              decision: resolvedDecision,
               verifiedWithPin: true,
               previousHash,
               signatureHash,
@@ -221,6 +227,68 @@ router.post('/:id/sign', async (req, res) => {
     return res.status(201).json({ success: true, step })
   } catch (error) {
     console.error('Error signing circulation step:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// GET /api/circulation/:id/verify-integrity — recompute each signature's hash
+// from its own stored fields and check the previousHash chain links up
+// correctly, step by step. This is a read-only integrity check (nothing is
+// written) — it's what the Signatures tab's "Verify Integrity" button calls.
+router.get('/:id/verify-integrity', async (req, res) => {
+  try {
+    const { id } = req.params
+    const circulation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: {
+        steps: {
+          orderBy: { stepNumber: 'asc' },
+          include: { signature: true },
+        },
+      },
+    })
+    if (!circulation) {
+      return res.status(404).json({ success: false, message: 'Circulation not found' })
+    }
+
+    const results = []
+    let expectedPreviousHash = null
+    let chainValid = true
+
+    for (const step of circulation.steps) {
+      const sig = step.signature
+      if (!sig) continue // unsigned steps (plain routing, no signature) aren't part of the hash chain
+
+      const recomputedHash = crypto
+        .createHash('sha256')
+        .update(`${sig.signerId}:${sig.decision}:${new Date(sig.signedAt).toISOString()}:${sig.previousHash || ''}`)
+        .digest('hex')
+
+      const hashMatches = recomputedHash === sig.signatureHash
+      const chainLinkValid = (sig.previousHash || null) === expectedPreviousHash
+      const valid = hashMatches && chainLinkValid
+      if (!valid) chainValid = false
+
+      results.push({
+        stepId: step.id,
+        stepNumber: step.stepNumber,
+        signatureId: sig.id,
+        hashMatches,
+        chainLinkValid,
+        valid,
+      })
+
+      expectedPreviousHash = sig.signatureHash
+    }
+
+    return res.json({
+      success: true,
+      chainValid,
+      signatureCount: results.length,
+      signatures: results,
+    })
+  } catch (error) {
+    console.error('Error verifying circulation integrity:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })

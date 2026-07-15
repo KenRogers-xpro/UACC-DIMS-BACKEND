@@ -45,6 +45,7 @@ model User {
   messagesSent        DirectMessage[]         @relation("MessageSender")
   messagesReceived    DirectMessage[]         @relation("MessageRecipient")
   announcements       Announcement[]
+  notificationReads   NotificationRead[]
 
   @@map("users")
 }
@@ -398,6 +399,23 @@ model Announcement {
   content   String   @db.Text
   pinned    Boolean  @default(false)
   createdAt DateTime @default(now())
+}
+
+// ─── NOTIFICATION READ STATE ─────────────────────────────────────────────────
+// Real per-user read-tracking for notification-bell items that have no
+// native read state of their own (circulation steps, announcements —
+// DirectMessage already has readAt and keeps using that). Replaces the
+// earlier 72h-lookback-window workaround for announcements.
+
+model NotificationRead {
+  id         String   @id @default(cuid())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id])
+  sourceType String   // "CIRCULATION_STEP", "MESSAGE", "ANNOUNCEMENT"
+  sourceId   String
+  readAt     DateTime @default(now())
+
+  @@unique([userId, sourceType, sourceId])
 }
 
 // ─── ENUMS ───────────────────────────────────────────────────────────────────

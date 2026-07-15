@@ -389,7 +389,9 @@ router.get('/:id/circulation', authenticate, async (req, res) => {
           orderBy: { stepNumber: 'asc' },
           include: {
             fromUser: { select: { id: true, name: true, role: true } },
-            signature: true,
+            signature: {
+              include: { signer: { select: { id: true, name: true } } },
+            },
           },
         },
       },
