@@ -385,6 +385,8 @@ model DirectMessage {
   recipient   User      @relation("MessageRecipient", fields: [recipientId], references: [id])
   content     String    @db.Text
   readAt      DateTime?
+  editedAt    DateTime?
+  deletedAt   DateTime?
   createdAt   DateTime  @default(now())
 
   @@index([senderId, recipientId])
@@ -392,13 +394,15 @@ model DirectMessage {
 }
 
 model Announcement {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   authorId  Int
-  author    User     @relation(fields: [authorId], references: [id])
+  author    User      @relation(fields: [authorId], references: [id])
   title     String
-  content   String   @db.Text
-  pinned    Boolean  @default(false)
-  createdAt DateTime @default(now())
+  content   String    @db.Text
+  pinned    Boolean   @default(false)
+  editedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
 }
 
 // ─── NOTIFICATION READ STATE ─────────────────────────────────────────────────

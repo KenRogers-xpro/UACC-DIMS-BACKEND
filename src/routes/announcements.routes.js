@@ -7,10 +7,13 @@ import { authenticate } from '../middleware/auth.js'
 const router = Router()
 
 // GET /api/announcements — company-wide, visible to every role. Pinned
-// first, then most recent.
+// first, then most recent. Unlike message threads, a deleted announcement
+// has no "other party" who'd lose conversation context — it's a retraction,
+// so it's excluded outright rather than shown as a placeholder.
 router.get('/', authenticate, async (req, res) => {
   try {
     const announcements = await prisma.announcement.findMany({
+      where: { deletedAt: null },
       include: { author: { select: { id: true, name: true, role: true } } },
       orderBy: [{ pinned: 'desc' }, { createdAt: 'desc' }],
     })
@@ -53,17 +56,44 @@ router.post('/', authenticate, async (req, res) => {
   }
 })
 
-// DELETE /api/announcements/:id — author or GENERAL_MANAGER only
+// PUT /api/announcements/:id — edit title/content. Author only.
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const { title, content } = req.body
+    if (!title || !String(title).trim() || !content || !String(content).trim()) {
+      return error(res, 'Title and content are required')
+    }
+
+    const announcement = await prisma.announcement.findUnique({ where: { id: req.params.id } })
+    if (!announcement || announcement.deletedAt) return notFound(res, 'Announcement not found')
+    if (announcement.authorId !== req.user.id) {
+      return error(res, 'Only the author can edit this announcement', 403)
+    }
+
+    const updated = await prisma.announcement.update({
+      where: { id: req.params.id },
+      data: { title: String(title).trim(), content: String(content).trim(), editedAt: new Date() },
+      include: { author: { select: { id: true, name: true, role: true } } },
+    })
+
+    return success(res, updated, 'Announcement updated')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// DELETE /api/announcements/:id — soft delete only. Author or GENERAL_MANAGER
+// (the moderation rule already established for this feature).
 router.delete('/:id', authenticate, async (req, res) => {
   try {
     const announcement = await prisma.announcement.findUnique({ where: { id: req.params.id } })
-    if (!announcement) return notFound(res, 'Announcement not found')
+    if (!announcement || announcement.deletedAt) return notFound(res, 'Announcement not found')
 
     if (announcement.authorId !== req.user.id && req.user.role !== 'GENERAL_MANAGER') {
       return error(res, 'Only the author or the General Manager can delete this announcement', 403)
     }
 
-    await prisma.announcement.delete({ where: { id: req.params.id } })
+    await prisma.announcement.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } })
 
     await logAudit({
       userId:      req.user.id,

@@ -25,11 +25,14 @@ router.get('/directory', authenticate, async (req, res) => {
 
 // GET /api/messages/conversations — one row per person you've messaged with,
 // most recent first, with the last message preview and unread count.
+// Deleted messages are excluded here (this is a list/preview context) —
+// they still exist in the actual thread as a placeholder, just not as
+// someone's conversation preview text.
 router.get('/conversations', authenticate, async (req, res) => {
   try {
     const userId = req.user.id
     const messages = await prisma.directMessage.findMany({
-      where: { OR: [{ senderId: userId }, { recipientId: userId }] },
+      where: { OR: [{ senderId: userId }, { recipientId: userId }], deletedAt: null },
       orderBy: { createdAt: 'desc' },
       include: {
         sender: { select: { id: true, name: true, role: true } },
@@ -54,7 +57,10 @@ router.get('/conversations', authenticate, async (req, res) => {
   }
 })
 
-// GET /api/messages/thread/:userId — full message history with one person
+// GET /api/messages/thread/:userId — full message history with one person.
+// Deleted messages stay in the timeline (as a placeholder) rather than
+// vanishing, so the other party doesn't lose conversation context — but
+// their real content is redacted server-side before it ever leaves here.
 router.get('/thread/:userId', authenticate, async (req, res) => {
   try {
     const otherId = parseInt(req.params.userId)
@@ -74,7 +80,9 @@ router.get('/thread/:userId', authenticate, async (req, res) => {
       orderBy: { createdAt: 'asc' },
     })
 
-    return success(res, { otherUser, messages: thread })
+    const messages = thread.map((m) => (m.deletedAt ? { ...m, content: null } : m))
+
+    return success(res, { otherUser, messages })
   } catch (err) {
     return serverError(res, err)
   }
@@ -107,6 +115,46 @@ router.post('/', authenticate, async (req, res) => {
     })
 
     return success(res, message, 'Message sent', 201)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/messages/:id — edit a message's content. Sender only, and only
+// while it hasn't been deleted.
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { content } = req.body
+    if (!content || !String(content).trim()) return error(res, 'Content is required')
+
+    const message = await prisma.directMessage.findUnique({ where: { id } })
+    if (!message || message.deletedAt) return notFound(res, 'Message not found')
+    if (message.senderId !== req.user.id) return error(res, 'You can only edit your own messages', 403)
+
+    const updated = await prisma.directMessage.update({
+      where: { id },
+      data: { content: String(content).trim(), editedAt: new Date() },
+    })
+
+    return success(res, updated, 'Message updated')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// DELETE /api/messages/:id — soft delete only, sender only. The row (and a
+// "deleted" marker) stays in the thread — see GET /thread/:userId.
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params
+    const message = await prisma.directMessage.findUnique({ where: { id } })
+    if (!message || message.deletedAt) return notFound(res, 'Message not found')
+    if (message.senderId !== req.user.id) return error(res, 'You can only delete your own messages', 403)
+
+    await prisma.directMessage.update({ where: { id }, data: { deletedAt: new Date() } })
+
+    return success(res, null, 'Message deleted')
   } catch (err) {
     return serverError(res, err)
   }

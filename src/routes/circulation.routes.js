@@ -1,8 +1,8 @@
 import express from 'express'
 import crypto from 'crypto'
-import bcrypt from 'bcryptjs'
 import { authenticate } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
+import { isPinRequired, verifySigningPin } from '../lib/signatures.js'
 
 const router = express.Router()
 
@@ -136,22 +136,26 @@ router.post('/:id/step', async (req, res) => {
   }
 })
 
-// POST /api/circulation/:id/sign - Add a step AND a real, PIN-verified
-// DigitalSignature in one action (the "Add Signature" flow from SigningModal)
+// POST /api/circulation/:id/sign - Add a step AND a real DigitalSignature in
+// one action (the "Sign This Step" flow from SigningModal). PIN verification
+// is required unless SIGNING_PIN_REQUIRED=false (demo mode) — either way,
+// verifiedWithPin on the resulting record honestly reflects whether a PIN
+// was actually checked, never true when it was bypassed.
 router.post('/:id/sign', async (req, res) => {
   try {
     const { id } = req.params
     const { pin, toRole, instruction, stepType, decision, amount } = req.body
 
-    if (!pin) return res.status(400).json({ success: false, message: 'PIN is required' })
+    const pinRequired = isPinRequired()
+    let verifiedWithPin = false
 
-    const signer = await prisma.user.findUnique({ where: { id: req.user.id } })
-    if (!signer.signingPinHash) {
-      return res.status(400).json({ success: false, message: 'You need to set a signing PIN before you can sign.', code: 'NO_PIN_SET' })
-    }
-    const pinMatch = await bcrypt.compare(String(pin), signer.signingPinHash)
-    if (!pinMatch) {
-      return res.status(401).json({ success: false, message: 'Incorrect PIN', code: 'INCORRECT_PIN' })
+    if (pinRequired) {
+      const result = await verifySigningPin(req.user.id, pin)
+      if (!result.ok) {
+        const status = result.code === 'INCORRECT_PIN' ? 401 : 400
+        return res.status(status).json({ success: false, message: result.message, code: result.code })
+      }
+      verifiedWithPin = true
     }
 
     const existingCirculation = await prisma.documentCirculation.findUnique({
@@ -212,7 +216,7 @@ router.post('/:id/sign', async (req, res) => {
               signerId: req.user.id,
               signerRole: req.user.role,
               decision: resolvedDecision,
-              verifiedWithPin: true,
+              verifiedWithPin,
               previousHash,
               signatureHash,
               ipAddress: req.ip,

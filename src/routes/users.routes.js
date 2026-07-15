@@ -6,6 +6,7 @@ import { logAudit } from '../lib/audit.js'
 import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { sendWelcomeEmail, sendPasswordResetEmail } from '../lib/email.js'
+import { isPinRequired } from '../lib/signatures.js'
 
 const router = Router()
 
@@ -273,6 +274,7 @@ router.get('/me/signing-pin-status', authenticate, async (req, res) => {
     return success(res, {
       hasPinSet: Boolean(user?.signingPinHash),
       setAt: user?.signingPinSetAt || null,
+      pinRequired: isPinRequired(),
     })
   } catch (err) {
     return serverError(res, err)
