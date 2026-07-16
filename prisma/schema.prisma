@@ -57,9 +57,10 @@ model Document {
   title       String
   category    DocumentCategory
   department  Department
-  filePath    String           // original filename for uploads; "draft://<id>" placeholder for finalized drafts
+  filePath    String           // Cloudinary secure_url for uploads going forward; "draft://<id>" placeholder for finalized drafts; legacy rows may still have just the original filename here (see fileData)
   fileSize    Int?
-  fileData    Bytes?           // the actual file content, stored in Postgres — null for draft-originated documents
+  fileData    Bytes?           // legacy: file content stored directly in Postgres — null for anything uploaded through Cloudinary or draft-originated
+  publicId    String?          // Cloudinary public_id, needed for delete/signed-url/info lookups — null for legacy fileData-backed rows and drafts
   mimeType    String?
   description String?
   status      String           @default("PRIVATE") // PRIVATE, SUBMITTED, IN_CIRCULATION, FINALIZED

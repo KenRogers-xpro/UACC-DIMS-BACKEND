@@ -5,10 +5,11 @@ import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateRegistryNo } from '../lib/registry.js'
 import { ingestDocument, removeDocumentEmbedding, semanticSearchDocuments } from '../lib/embeddings.js'
+import { uploadFile } from '../lib/cloudinary.js'
 import multer from 'multer'
 
 const router  = Router()
-const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
+const upload  = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } })
 
 async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENERAL_MANAGER' }) {
   return prisma.documentRouting.create({
@@ -200,15 +201,23 @@ router.post('/', authenticate, upload.single('file'), async (req, res) => {
       return error(res, 'Title, category, department and file are required')
     }
 
+    let uploaded
+    try {
+      uploaded = await uploadFile(file.buffer, file.originalname, file.mimetype)
+    } catch (uploadErr) {
+      console.error('Cloudinary upload failed:', uploadErr)
+      return serverError(res, uploadErr)
+    }
+
     const document = await prisma.document.create({
       data: {
         title:       String(title).trim(),
         category,
         department,
         description: description ? String(description).trim() : null,
-        filePath:    file.originalname,
+        filePath:    uploaded.secure_url,
+        publicId:    uploaded.public_id,
         mimeType:    file.mimetype,
-        fileData:    file.buffer,
         fileSize:    file.size,
         uploadedBy:  req.user.id,
       },
@@ -272,10 +281,17 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 })
 
-// GET /api/documents/:id/file — streams the actual file bytes. Requires the
-// same Bearer auth as everything else, so the frontend fetches this as a
-// blob (not a plain <img src=.../<iframe src=...> URL, which can't carry an
-// Authorization header) and renders it via an object URL.
+// GET /api/documents/:id/file — serves the actual file. Requires the same
+// Bearer auth as everything else, so the frontend fetches this as a blob
+// (not a plain <img src=.../<iframe src=...> URL, which can't carry an
+// Authorization header) and renders it via an object URL — fetch() follows
+// the redirect below transparently either way.
+//
+// Uploads going through Cloudinary (see uploadFile() in lib/cloudinary.js)
+// have no fileData — filePath is Cloudinary's own secure_url, so we just
+// redirect there once the same visibility check has passed. Legacy rows
+// uploaded before Cloudinary was wired back up still have their bytes in
+// Postgres and get streamed directly, unchanged.
 router.get('/:id/file', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
@@ -283,7 +299,7 @@ router.get('/:id/file', authenticate, async (req, res) => {
       where: { id },
       select: { id: true, uploadedBy: true, status: true, filePath: true, mimeType: true, fileData: true },
     })
-    if (!document || !document.fileData) return notFound(res, 'Document not found')
+    if (!document || (!document.fileData && !document.filePath)) return notFound(res, 'Document not found')
 
     const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
     const isOwner = document.uploadedBy === req.user.id
@@ -297,6 +313,11 @@ router.get('/:id/file', authenticate, async (req, res) => {
         select: { id: true },
       })
       if (!touchedIt) return notFound(res, 'Document not found')
+    }
+
+    if (!document.fileData) {
+      if (!/^https?:\/\//.test(document.filePath)) return notFound(res, 'Document not found')
+      return res.redirect(document.filePath)
     }
 
     res.setHeader('Content-Type', document.mimeType || 'application/octet-stream')
