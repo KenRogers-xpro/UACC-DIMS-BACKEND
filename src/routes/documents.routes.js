@@ -6,6 +6,7 @@ import { authenticate, authorize } from '../middleware/auth.js'
 import { generateRegistryNo } from '../lib/registry.js'
 import { ingestDocument, removeDocumentEmbedding, semanticSearchDocuments } from '../lib/embeddings.js'
 import { uploadFile } from '../lib/cloudinary.js'
+import { canViewDocument } from '../lib/documentAccess.js'
 import multer from 'multer'
 
 const router  = Router()
@@ -328,24 +329,6 @@ router.get('/:id/file', authenticate, async (req, res) => {
   }
 })
 
-// Shared visibility check used by the annotation/circulation sub-resources —
-// mirrors GET /:id's rule exactly so you can't read annotations/signatures
-// on a document you couldn't otherwise see.
-async function canViewDocument(document, user) {
-  const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(user.role)
-  if (hasBroadAccess || document.uploadedBy === user.id) return true
-  if (document.status === 'PRIVATE') return false
-
-  const touchedIt = await prisma.documentCirculation.findFirst({
-    where: {
-      sourceType: 'DOCUMENT',
-      sourceId: String(document.id),
-      steps: { some: { OR: [{ fromRole: user.role }, { toRole: user.role }] } },
-    },
-    select: { id: true },
-  })
-  return Boolean(touchedIt)
-}
 
 // GET /api/documents/:id/annotations
 router.get('/:id/annotations', authenticate, async (req, res) => {

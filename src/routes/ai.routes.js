@@ -3,7 +3,8 @@ import { authenticate } from '../middleware/auth.js'
 import { success, error, serverError } from '../lib/response.js'
 import { generateFromMessages, hasKey, getKeyDiagnostics, checkKeyWithTestCall } from '../lib/ai.js'
 import { prisma } from '../lib/prisma.js'
-import { semanticSearchDocuments } from '../lib/embeddings.js'
+import { semanticSearchWithEmbedding } from '../lib/embeddings.js'
+import { captureUnansweredQuery, UNANSWERED_QUERY_THRESHOLD } from '../lib/insights.js'
 
 const router = Router()
 
@@ -11,10 +12,18 @@ const router = Router()
 // what this user can actually see (same rule as GET /api/documents), and
 // renders them as a context block the model is told to cite from. Never
 // throws — retrieval failure (e.g. embeddings not configured) degrades to
-// no context rather than breaking the chat.
+// no context rather than breaking the chat. Also returns the raw top-of-
+// search score and the query's embedding (computed once here, reused by
+// the unanswered-query capture below) — topScore is the best result from
+// the *raw* semantic search, before the visibility filter, since a
+// "no good answer exists at all" question is a different case from "a good
+// answer exists but not for you" (the latter is handled entirely by
+// matchUnansweredQueriesForDocument's own visibility check at match time).
 async function buildRagContext(messages, user) {
   const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-  if (!lastUserMessage?.text?.trim()) return ''
+  if (!lastUserMessage?.text?.trim()) return { context: '', topScore: 1, embedding: null, queryText: '' }
+
+  const queryText = lastUserMessage.text.trim()
 
   try {
     const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(user.role)
@@ -30,25 +39,28 @@ async function buildRagContext(messages, user) {
       touchedDocumentIds = new Set(touchedCirculations.map((c) => parseInt(c.sourceId, 10)))
     }
 
-    const candidates = await semanticSearchDocuments(lastUserMessage.text, 15)
+    const { embedding, results: candidates } = await semanticSearchWithEmbedding(queryText, 15)
+    const topScore = candidates[0]?.score ?? 0
     const visible = candidates
       .filter((doc) => hasBroadAccess || doc.uploadedBy === user.id || touchedDocumentIds.has(doc.id))
       .slice(0, 5)
 
-    if (visible.length === 0) return ''
+    if (visible.length === 0) return { context: '', topScore, embedding, queryText }
 
     const entries = visible.map((doc) =>
       `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})${doc.description ? `: ${doc.description}` : ''}`
     ).join('\n')
 
-    return [
+    const context = [
       'The following documents from the DIMS system may be relevant to the user\'s question.',
       'Cite them by title and Document # when you use them. Do not mention documents not listed here.',
       entries,
     ].join('\n')
+
+    return { context, topScore, embedding, queryText }
   } catch (err) {
     console.error('RAG retrieval failed, continuing without context:', err.message)
-    return ''
+    return { context: '', topScore: 1, embedding: null, queryText }
   }
 }
 
@@ -68,12 +80,27 @@ router.post('/', authenticate, async (req, res) => {
       return error(res, 'Gemini API key is not set', { diagnostics: getKeyDiagnostics() })
     }
 
-    const ragContext = await buildRagContext(messages, req.user)
-    
+    const { context: ragContext, topScore, embedding, queryText } = await buildRagContext(messages, req.user)
+    const isUnanswerable = topScore < UNANSWERED_QUERY_THRESHOLD
+
+    // Store the question (reusing the embedding already computed above —
+    // never re-embed) so a future document ingestion can check against it.
+    // Awaited, not fire-and-forget: the system prompt below needs to know
+    // right now whether to give the "I'll flag you later" line, and this is
+    // one small insert, not the expensive part of the request.
+    if (isUnanswerable && embedding && queryText) {
+      try {
+        await captureUnansweredQuery({ userId: req.user.id, queryText, embedding, topScore })
+      } catch (err) {
+        console.error('Failed to capture unanswered query:', err.message)
+      }
+    }
+
     const systemPrompt = `You are an AI assistant in the UACC Document & Information Management System (DIMS).
 When a user asks you to "draft a memo", "write a letter", "compose a report", or similar, you MUST use the draftDocument tool to create the draft.
 Generate well-structured document content (clear subject line, To/From/Date/Ref/Subject structure where appropriate) and call the tool.
-IMPORTANT: After calling the tool, your response MUST state clearly that this is a draft requiring human review before submission — never imply the document is finalized. Tell the user to go to their My Drafts to review it.`
+IMPORTANT: After calling the tool, your response MUST state clearly that this is a draft requiring human review before submission — never imply the document is finalized. Tell the user to go to their My Drafts to review it.${isUnanswerable ? `
+IMPORTANT: You could not find a good answer to the user's question in the available documents. Honestly tell them you couldn't find a strong match right now, and mention that you'll notify them if a relevant document is added later. Do not fabricate an answer or cite documents that weren't provided to you.` : ''}`
 
     const augmentedMessages = [
       { role: 'system', text: systemPrompt },

@@ -48,6 +48,8 @@ model User {
   notificationReads   NotificationRead[]
   hiddenConversations HiddenConversation[]
   circulationAttachmentsMade CirculationAttachment[]
+  unansweredQueries   UnansweredQuery[]
+  agentInsights       AgentInsight[]
 
   @@map("users")
 }
@@ -246,6 +248,43 @@ model DocumentEmbedding {
   createdAt   DateTime @default(now())
 
   @@index([sourceType, sourceId])
+}
+
+// ─── AI AGENT INSIGHTS ──────────────────────────────────────────────────────
+// A question the AI agent couldn't answer well gets stored with its own
+// embedding; every later document ingestion checks unresolved questions
+// against just the new chunks, and a strong-enough match produces an
+// AgentInsight for whoever asked. Same pgvector-needs-raw-SQL caveat as
+// DocumentEmbedding above.
+
+model UnansweredQuery {
+  id             String    @id @default(cuid())
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id])
+  queryText      String    @db.Text
+  embedding      Unsupported("vector(768)")
+  bestScoreAtAsk Float?    // best similarity at time of asking, for reference/tuning
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, resolvedAt])
+}
+
+model AgentInsight {
+  id          String    @id @default(cuid())
+  userId      Int       // who this insight is FOR
+  user        User      @relation(fields: [userId], references: [id])
+  queryId     String?   // the UnansweredQuery it resolves, if any
+  title       String
+  body        String    @db.Text
+  sourceType  String    // "DOCUMENT", "REGISTRY_ENTRY", etc.
+  sourceId    String
+  similarity  Float
+  seenAt      DateTime?
+  dismissedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, seenAt, dismissedAt])
 }
 
 // ─── DIGITAL SIGNATURES ─────────────────────────────────────────────────────

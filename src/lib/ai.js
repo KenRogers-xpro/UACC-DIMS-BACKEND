@@ -7,16 +7,18 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 const API_KEY = process.env.GEMINI_API_KEY || ''
-const MODEL = process.env.GEMINI_MODEL || 'text-bison-001'
+// text-bison-001 (the old default here) is a retired PaLM model, not even
+// a Gemini one — it would fail every chat call regardless of key validity.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest'
 
 let genai, model
 try {
-  // prefer object form if supported, fall back to string
-  try {
-    genai = new GoogleGenerativeAI({ apiKey: API_KEY })
-  } catch (e) {
-    genai = new GoogleGenerativeAI(API_KEY)
-  }
+  // This SDK's constructor takes the key directly as a string — the object
+  // form { apiKey } (a different SDK's convention) doesn't throw here, it
+  // just silently produces a client that sends a broken key on every
+  // request, surfacing as a confusing "API key not valid" from Google
+  // instead of an obvious local error.
+  genai = new GoogleGenerativeAI(API_KEY)
   model = genai.getGenerativeModel({ model: MODEL })
 } catch (err) {
   console.error('Failed to initialize GoogleGenerativeAI client:', err && err.message)

@@ -1,11 +1,16 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import crypto from 'crypto'
 import { prisma } from './prisma.js'
+import { toVectorLiteral } from './vectorUtils.js'
+import { matchUnansweredQueriesForDocument } from './insights.js'
 
 const API_KEY = process.env.GEMINI_API_KEY || ''
-// text-embedding-004 always returns 768 dimensions, matching the
-// DocumentEmbedding.embedding vector(768) column.
-const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004'
+// text-embedding-004 has been retired by Google — gemini-embedding-001 is
+// the replacement, but it defaults to 3072 dimensions, so every call must
+// explicitly request 768 to keep matching the DocumentEmbedding/
+// UnansweredQuery vector(768) columns.
+const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001'
+const EMBEDDING_DIMENSIONS = 768
 
 let genai, embeddingModel
 try {
@@ -17,16 +22,15 @@ try {
 
 export async function generateEmbedding(text) {
   if (!embeddingModel) throw new Error('Embedding model not initialized')
-  const result = await embeddingModel.embedContent(text)
+  const result = await embeddingModel.embedContent({
+    content: { parts: [{ text }] },
+    outputDimensionality: EMBEDDING_DIMENSIONS,
+  })
   const values = result?.embedding?.values
   if (!Array.isArray(values) || values.length === 0) {
     throw new Error('Embedding API returned no vector')
   }
   return values
-}
-
-function toVectorLiteral(values) {
-  return `[${values.join(',')}]`
 }
 
 // Builds a lightweight text surrogate for the document. This embeds
@@ -63,21 +67,22 @@ export async function ingestDocument(document) {
      VALUES ($1, 'DOCUMENT', $2, 0, $3, $4::vector, now())`,
     id, sourceId, chunkText, vectorLiteral
   )
+
+  // Detached on purpose — matching against every unresolved question is a
+  // separate concern from indexing this document, and must never be able
+  // to make ingestDocument() itself (and therefore the upload/submit
+  // request it's chained from) fail or hang.
+  matchUnansweredQueriesForDocument(document).catch((err) => {
+    console.error('Insight matching pass failed for document', document.id, err)
+  })
 }
 
 export async function removeDocumentEmbedding(documentId) {
   await prisma.$executeRaw`DELETE FROM "DocumentEmbedding" WHERE "sourceType" = 'DOCUMENT' AND "sourceId" = ${String(documentId)}`
 }
 
-// Returns { id, title, description, category, department, status, uploadedBy, score }[]
-// ordered by relevance. Does NOT apply access control — callers must filter
-// the result against the requesting user's visible-document set themselves
-// (see documents.routes.js's semantic search endpoint and ai.routes.js).
-export async function semanticSearchDocuments(queryText, limit = 10) {
-  const embedding = await generateEmbedding(queryText)
-  const vectorLiteral = toVectorLiteral(embedding)
-
-  const rows = await prisma.$queryRawUnsafe(
+async function searchByVectorLiteral(vectorLiteral, limit) {
+  return prisma.$queryRawUnsafe(
     `SELECT d.id, d.title, d.description, d.category, d.department, d.status, d."uploadedBy",
             1 - (e.embedding <=> $1::vector) AS score
      FROM "DocumentEmbedding" e
@@ -87,5 +92,23 @@ export async function semanticSearchDocuments(queryText, limit = 10) {
      LIMIT $2`,
     vectorLiteral, limit
   )
-  return rows
+}
+
+// Returns { id, title, description, category, department, status, uploadedBy, score }[]
+// ordered by relevance. Does NOT apply access control — callers must filter
+// the result against the requesting user's visible-document set themselves
+// (see documents.routes.js's semantic search endpoint and ai.routes.js).
+export async function semanticSearchDocuments(queryText, limit = 10) {
+  const embedding = await generateEmbedding(queryText)
+  const vectorLiteral = toVectorLiteral(embedding)
+  return searchByVectorLiteral(vectorLiteral, limit)
+}
+
+// Same search, but also returns the query's own embedding — for callers
+// (ai.routes.js's unanswered-query capture) that need to reuse it rather
+// than re-embedding the same text a second time.
+export async function semanticSearchWithEmbedding(queryText, limit = 10) {
+  const embedding = await generateEmbedding(queryText)
+  const results = await searchByVectorLiteral(toVectorLiteral(embedding), limit)
+  return { embedding, results }
 }

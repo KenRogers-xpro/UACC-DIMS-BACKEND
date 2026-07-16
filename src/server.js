@@ -23,6 +23,7 @@ import circulationRoutes from './routes/circulation.routes.js'
 import messageRoutes from './routes/messages.routes.js'
 import announcementRoutes from './routes/announcements.routes.js'
 import notificationRoutes from './routes/notifications.routes.js'
+import insightRoutes from './routes/insights.routes.js'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -53,6 +54,7 @@ const limiter = rateLimit({
 		return path.startsWith('/api/messages') ||
 		       path.startsWith('/api/announcements') ||
 		       path.startsWith('/api/notifications') ||
+		       path.startsWith('/api/insights') ||
 		       path.startsWith('/api/users/online-status') ||
 		       path.startsWith('/api/ai'); // AI has its own limiter
 	}
@@ -102,6 +104,7 @@ app.use('/api/circulation', circulationRoutes)
 app.use('/api/messages', pollingLimiter, messageRoutes)
 app.use('/api/announcements', pollingLimiter, announcementRoutes)
 app.use('/api/notifications', pollingLimiter, notificationRoutes)
+app.use('/api/insights', pollingLimiter, insightRoutes)
 
 // 404 handler removed (avoids path-to-regexp '*' parsing issue in this environment)
 
