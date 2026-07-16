@@ -1,10 +1,14 @@
 import express from 'express'
 import crypto from 'crypto'
+import multer from 'multer'
 import { authenticate } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
 import { isPinRequired, verifySigningPin } from '../lib/signatures.js'
+import { logAudit } from '../lib/audit.js'
+import { generateRegistryNo } from '../lib/registry.js'
 
 const router = express.Router()
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
 
 router.use(authenticate)
 
@@ -293,6 +297,116 @@ router.get('/:id/verify-integrity', async (req, res) => {
     })
   } catch (error) {
     console.error('Error verifying circulation integrity:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// POST /api/circulation/:id/attachments — attach a supporting document to an
+// in-progress circulation. Current holder only, same check as adding a step
+// — it's still "their turn" with the file. The upload becomes a real
+// Document (status SUBMITTED, not PRIVATE — it's entering a formal chain,
+// not someone's personal staging area) and is bridged into the Records
+// registry the same way documents.routes.js POST /:id/submit bridges a
+// document at submit time, since creating it here skips that endpoint
+// entirely.
+router.post('/:id/attachments', upload.single('file'), async (req, res) => {
+  try {
+    const { id } = req.params
+    const { note } = req.body
+    const file = req.file
+    if (!file) return res.status(400).json({ success: false, message: 'File is required' })
+
+    const circulation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: { steps: { orderBy: { stepNumber: 'desc' }, take: 1 } },
+    })
+    if (!circulation) return res.status(404).json({ success: false, message: 'Circulation not found' })
+    if (req.user.role !== circulation.currentHolderRole) {
+      return res.status(403).json({ success: false, message: 'You are not the current holder of this document' })
+    }
+
+    const latestStepId = circulation.steps[0]?.id || null
+
+    const attachment = await prisma.$transaction(async (tx) => {
+      const document = await tx.document.create({
+        data: {
+          title: file.originalname,
+          category: 'OTHER',
+          department: req.user.department,
+          filePath: file.originalname,
+          mimeType: file.mimetype,
+          fileData: file.buffer,
+          fileSize: file.size,
+          uploadedBy: req.user.id,
+          status: 'SUBMITTED',
+          isEditable: false,
+        },
+        select: { id: true, title: true, mimeType: true, fileSize: true, createdAt: true },
+      })
+
+      const registryNo = await generateRegistryNo()
+      await tx.registryEntry.create({
+        data: {
+          registryNo,
+          subject: `Attachment: ${file.originalname}`,
+          docType: 'OTHER',
+          direction: 'INTERNAL',
+          source: req.user.name,
+          destination: String(circulation.currentHolderRole).replace(/_/g, ' '),
+          handledById: req.user.id,
+          medium: 'EMAIL',
+          status: 'PENDING',
+          confidentiality: 'INTERNAL',
+          dateRegistered: new Date(),
+          sourceDocumentId: document.id,
+        },
+      })
+
+      return tx.circulationAttachment.create({
+        data: {
+          circulationId: id,
+          circulationStepId: latestStepId,
+          documentId: document.id,
+          attachedById: req.user.id,
+          note: note ? String(note).trim() : null,
+        },
+        include: {
+          document: { select: { id: true, title: true, mimeType: true, fileSize: true, createdAt: true } },
+          attachedBy: { select: { id: true, name: true, role: true } },
+        },
+      })
+    })
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'DOCUMENT_UPLOAD',
+      module: 'Circulation',
+      description: `Attached "${file.originalname}" to circulation "${circulation.title}"`,
+      ipAddress: req.ip,
+    })
+
+    return res.status(201).json({ success: true, attachment })
+  } catch (error) {
+    console.error('Error attaching document to circulation:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// GET /api/circulation/:id/attachments
+router.get('/:id/attachments', async (req, res) => {
+  try {
+    const { id } = req.params
+    const attachments = await prisma.circulationAttachment.findMany({
+      where: { circulationId: id },
+      include: {
+        document: { select: { id: true, title: true, mimeType: true, fileSize: true, createdAt: true } },
+        attachedBy: { select: { id: true, name: true, role: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+    return res.json({ success: true, attachments })
+  } catch (error) {
+    console.error('Error fetching circulation attachments:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })

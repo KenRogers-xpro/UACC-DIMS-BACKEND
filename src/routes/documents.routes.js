@@ -47,11 +47,22 @@ async function buildStateFilter(state, user) {
   if (state === 'NEW' || state === 'PENDING') {
     const myCirculations = await prisma.documentCirculation.findMany({
       where: { sourceType: 'DOCUMENT', currentHolderRole: user.role, status: 'IN_CIRCULATION' },
-      select: { sourceId: true, updatedAt: true },
+      select: { id: true, sourceId: true, updatedAt: true },
     })
-    const isRecent = (c) => (Date.now() - new Date(c.updatedAt).getTime()) < NEW_ARRIVAL_WINDOW_MS
+
+    // "New" is "landed with me recently AND I haven't opened it yet" — once
+    // viewed (DocumentViewerModal marks NEW_ARRIVAL read on open), it falls
+    // through to Pending even if still inside the recency window. Not a
+    // permanent category, just a since-I-last-looked surface.
+    const readRows = await prisma.notificationRead.findMany({
+      where: { userId: user.id, sourceType: 'NEW_ARRIVAL', sourceId: { in: myCirculations.map((c) => c.id) } },
+      select: { sourceId: true },
+    })
+    const viewedSet = new Set(readRows.map((r) => r.sourceId))
+    const isNew = (c) => (Date.now() - new Date(c.updatedAt).getTime()) < NEW_ARRIVAL_WINDOW_MS && !viewedSet.has(c.id)
+
     const ids = myCirculations
-      .filter((c) => (state === 'NEW' ? isRecent(c) : !isRecent(c)))
+      .filter((c) => (state === 'NEW' ? isNew(c) : !isNew(c)))
       .map((c) => parseInt(c.sourceId, 10))
       .filter(Number.isInteger)
 

@@ -27,18 +27,26 @@ router.get('/directory', authenticate, async (req, res) => {
 // most recent first, with the last message preview and unread count.
 // Deleted messages are excluded here (this is a list/preview context) —
 // they still exist in the actual thread as a placeholder, just not as
-// someone's conversation preview text.
+// someone's conversation preview text. Conversations this user hid (see
+// DELETE /conversations/:userId) are dropped too, UNLESS the last message
+// is newer than when they hid it — new activity un-hides a conversation
+// rather than silently swallowing it forever.
 router.get('/conversations', authenticate, async (req, res) => {
   try {
     const userId = req.user.id
-    const messages = await prisma.directMessage.findMany({
-      where: { OR: [{ senderId: userId }, { recipientId: userId }], deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        sender: { select: { id: true, name: true, role: true } },
-        recipient: { select: { id: true, name: true, role: true } },
-      },
-    })
+    const [messages, hiddenRows] = await Promise.all([
+      prisma.directMessage.findMany({
+        where: { OR: [{ senderId: userId }, { recipientId: userId }], deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          sender: { select: { id: true, name: true, role: true } },
+          recipient: { select: { id: true, name: true, role: true } },
+        },
+      }),
+      prisma.hiddenConversation.findMany({ where: { userId } }),
+    ])
+
+    const hiddenAtByPartner = new Map(hiddenRows.map((h) => [h.otherUserId, h.hiddenAt]))
 
     const byPartner = new Map()
     for (const m of messages) {
@@ -51,7 +59,31 @@ router.get('/conversations', authenticate, async (req, res) => {
       }
     }
 
-    return success(res, Array.from(byPartner.values()))
+    const visible = Array.from(byPartner.values()).filter(({ partner, lastMessage }) => {
+      const hiddenAt = hiddenAtByPartner.get(partner.id)
+      return !hiddenAt || new Date(lastMessage.createdAt) > new Date(hiddenAt)
+    })
+
+    return success(res, visible)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// DELETE /api/messages/conversations/:userId — hide this conversation from
+// the requesting user's own list. The other party's copy is untouched —
+// hard-deleting DirectMessage rows here would erase their side too, which
+// is exactly what the soft-delete posture on individual messages already
+// avoids.
+router.delete('/conversations/:userId', authenticate, async (req, res) => {
+  try {
+    const otherUserId = parseInt(req.params.userId, 10)
+    await prisma.hiddenConversation.upsert({
+      where: { userId_otherUserId: { userId: req.user.id, otherUserId } },
+      update: { hiddenAt: new Date() },
+      create: { userId: req.user.id, otherUserId, hiddenAt: new Date() },
+    })
+    return success(res, null, 'Conversation hidden')
   } catch (err) {
     return serverError(res, err)
   }

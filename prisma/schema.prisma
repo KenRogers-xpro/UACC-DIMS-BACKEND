@@ -46,6 +46,8 @@ model User {
   messagesReceived    DirectMessage[]         @relation("MessageRecipient")
   announcements       Announcement[]
   notificationReads   NotificationRead[]
+  hiddenConversations HiddenConversation[]
+  circulationAttachmentsMade CirculationAttachment[]
 
   @@map("users")
 }
@@ -71,6 +73,7 @@ model Document {
   annotations Annotation[]
   versions    DocumentVersion[]
   registryEntries RegistryEntry[]
+  circulationAttachments CirculationAttachment[]
 
   @@map("documents")
 }
@@ -206,6 +209,7 @@ model RecordsFile {
   updatedAt     DateTime @updatedAt
 
   entries       RegistryEntry[]
+  filedCopies   CirculationRecordsCopy[]
 
   @@index([fileNumber])
 }
@@ -300,6 +304,20 @@ model DocumentCirculation {
   updatedAt         DateTime @updatedAt
   steps             CirculationStep[]
   dispatchRecord    DispatchRecord?
+  attachments       CirculationAttachment[]
+}
+
+model CirculationAttachment {
+  id                String   @id @default(cuid())
+  circulationId     String
+  circulation       DocumentCirculation @relation(fields: [circulationId], references: [id])
+  circulationStepId String?  // which step it was attached at, for the trail
+  documentId        Int      // every attachment IS a real Document record
+  document          Document @relation(fields: [documentId], references: [id])
+  attachedById      Int
+  attachedBy        User     @relation(fields: [attachedById], references: [id])
+  note              String?  // e.g. "Quotation from UPPC as requested"
+  createdAt         DateTime @default(now())
 }
 
 model CirculationStep {
@@ -329,6 +347,13 @@ model CirculationRecordsCopy {
   circulationStepId String
   step              CirculationStep @relation(fields: [circulationStepId], references: [id])
   status            String    @default("PENDING_FILING") // PENDING_FILING, FILED
+
+  // Optional dossier this copy was filed into — set at filing time via the
+  // Filing Queue's own file picker, same RecordsFile the register modal
+  // links to.
+  recordsFileId     String?
+  recordsFile       RecordsFile? @relation(fields: [recordsFileId], references: [id])
+
   filedById         Int?
   filedBy           User?     @relation(fields: [filedById], references: [id])
   filedAt           DateTime?
@@ -391,6 +416,22 @@ model DirectMessage {
 
   @@index([senderId, recipientId])
   @@index([recipientId, readAt])
+}
+
+// Conversations aren't a first-class row (they're derived by grouping
+// DirectMessage by partner), so "delete conversation" can't be a delete at
+// all without destroying the other party's copy too — it's a per-user
+// visibility flag instead. A conversation with activity newer than hiddenAt
+// (a message sent OR received after hiding) is no longer filtered out; see
+// GET /api/messages/conversations.
+model HiddenConversation {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+  otherUserId Int
+  hiddenAt    DateTime @default(now())
+
+  @@unique([userId, otherUserId])
 }
 
 model Announcement {

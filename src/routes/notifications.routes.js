@@ -6,7 +6,9 @@ import { authenticate } from '../middleware/auth.js'
 const router = Router()
 
 const RECENT_ITEMS_LIMIT = 8
-const VALID_SOURCE_TYPES = ['CIRCULATION_STEP', 'MESSAGE', 'ANNOUNCEMENT']
+// NEW_ARRIVAL: sourceId is a DocumentCirculation id — marks "seen" for the
+// Documents page's New Arrivals tab (see documents.routes.js buildStateFilter).
+const VALID_SOURCE_TYPES = ['CIRCULATION_STEP', 'MESSAGE', 'ANNOUNCEMENT', 'NEW_ARRIVAL']
 
 // GET /api/notifications — real read-tracking, split into "incoming" (landing
 // on you: awaiting your action, messages you received, announcements you
