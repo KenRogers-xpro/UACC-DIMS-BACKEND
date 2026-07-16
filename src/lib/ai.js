@@ -9,7 +9,11 @@ dotenv.config()
 const API_KEY = process.env.GEMINI_API_KEY || ''
 // text-bison-001 (the old default here) is a retired PaLM model, not even
 // a Gemini one — it would fail every chat call regardless of key validity.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest'
+// DO NOT use '-latest' aliases — Google hot-swaps what they point to without
+// notice, which can silently change your quota/pricing tier overnight (this
+// broke the app once already, July 2026). Always pin to a specific dated
+// model version.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 
 let genai, model
 try {

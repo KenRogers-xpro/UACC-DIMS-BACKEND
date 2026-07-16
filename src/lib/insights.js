@@ -5,7 +5,11 @@ import { toVectorLiteral } from './vectorUtils.js'
 import { canViewDocument } from './documentAccess.js'
 
 const API_KEY = process.env.GEMINI_API_KEY || ''
-const SUMMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest'
+// DO NOT use '-latest' aliases — Google hot-swaps what they point to without
+// notice, which can silently change your quota/pricing tier overnight (this
+// broke the app once already, July 2026). Always pin to a specific dated
+// model version.
+const SUMMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 
 // Both tunable — start conservative, adjust after observing real
 // similarity score distributions in production.
