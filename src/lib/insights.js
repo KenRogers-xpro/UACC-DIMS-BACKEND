@@ -5,11 +5,11 @@ import { toVectorLiteral } from './vectorUtils.js'
 import { canViewDocument } from './documentAccess.js'
 
 const API_KEY = process.env.GEMINI_API_KEY || ''
-// DO NOT use '-latest' aliases — Google hot-swaps what they point to without
-// notice, which can silently change your quota/pricing tier overnight (this
-// broke the app once already, July 2026). Always pin to a specific dated
-// model version.
-const SUMMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+// Pin to gemini-3.1-flash-lite (GA, free tier, high quota). DO NOT use
+// '-latest' aliases (broke July 2026 when it silently moved to 3.5-flash
+// with 20 req/day limit). gemini-2.5-flash is restricted to pre-existing
+// users as of mid-2026 and 404s for new API keys.
+const SUMMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite'
 
 // Both tunable — start conservative, adjust after observing real
 // similarity score distributions in production.
