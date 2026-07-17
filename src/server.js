@@ -28,6 +28,13 @@ import insightRoutes from './routes/insights.routes.js'
 const app = express()
 const PORT = process.env.PORT || 5000
 
+// Render (and most PaaS hosts) sit the app behind a reverse proxy — without
+// this, req.ip resolves to the proxy's own address for every request, which
+// means express-rate-limit's default IP-based key buckets every distinct
+// user together under one counter. Must be set before any rate limiter is
+// constructed.
+app.set('trust proxy', 1)
+
 // ── MIDDLEWARE ────────────────────────────────────────────────────────────────
 
 app.use(helmet())
@@ -44,14 +51,20 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
-// Rate limiting
-const limiter = rateLimit({
+// Rate limiting — split rather than one shared bucket, because brute-force
+// protection (auth) and normal dashboard polling load (everything else) have
+// completely different legitimate request volumes. A single limiter sized
+// for one starves the other: sized for polling, login brute-forcing goes
+// unchecked; sized for login, four concurrent 5-30s pollers plus normal
+// navigation lock real users out within minutes.
+const generalLimiter = rateLimit({
 	windowMs: 15 * 60 * 1000, // 15 minutes
-	max: 100,
+	max: 500,
 	message: { success: false, message: 'Too many requests. Please try again later.' },
 	skip: (req) => {
 		const path = req.originalUrl || req.url;
-		return path.startsWith('/api/messages') ||
+		return path.startsWith('/api/auth') || // has its own, stricter limiter
+		       path.startsWith('/api/messages') ||
 		       path.startsWith('/api/announcements') ||
 		       path.startsWith('/api/notifications') ||
 		       path.startsWith('/api/insights') ||
@@ -59,7 +72,16 @@ const limiter = rateLimit({
 		       path.startsWith('/api/ai'); // AI has its own limiter
 	}
 })
-app.use('/api/', limiter)
+app.use('/api/', generalLimiter)
+
+// Auth — this is where brute-force protection actually belongs, scoped
+// tightly to the login endpoint itself (see auth.routes.js) rather than the
+// whole /api/auth prefix, which also handles /logout and /me.
+const authLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	max: 10,
+	message: { success: false, message: 'Too many login attempts. Please try again in 15 minutes.' },
+})
 
 // AI rate limit — stricter
 const aiLimiter = rateLimit({
@@ -88,6 +110,12 @@ app.get('/health', (req, res) => {
 	})
 })
 
+// Scoped to /login specifically (not the whole /api/auth prefix, which also
+// covers /logout and /me — neither is a brute-force target) — registered
+// ahead of the router mount below since Express applies middleware in
+// registration order, and authRoutes would otherwise handle + end the
+// request before this ever ran.
+app.use('/api/auth/login', authLimiter)
 app.use('/api/auth', authRoutes)
 app.use('/api/documents', documentRoutes)
 app.use('/api/procurement', procurementRoutes)
