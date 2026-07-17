@@ -5,6 +5,7 @@ import { logAudit } from '../lib/audit.js'
 import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateRegistryNo } from '../lib/registry.js'
+import { validateCcRoles } from '../lib/roles.js'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
@@ -119,10 +120,21 @@ router.post('/', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'
       recordsFileId,
       newFileNumber,
       newFileTitle,
+      ccRoles,
     } = req.body
 
     if (!subject || !docType || !direction || !source || !destination || !medium || !dateRegistered) {
       return error(res, 'Subject, type, direction, source, destination, medium and date registered are required')
+    }
+
+    // multipart/form-data (this route accepts an optional file alongside the
+    // fields) — array fields arrive as a JSON string, not a real array.
+    let validatedCcRoles
+    try {
+      const parsedCcRoles = typeof ccRoles === 'string' ? JSON.parse(ccRoles) : ccRoles
+      validatedCcRoles = validateCcRoles(parsedCcRoles)
+    } catch (err) {
+      return error(res, err.message || 'Invalid ccRoles')
     }
 
     const file = req.file
@@ -195,6 +207,7 @@ router.post('/', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'
             authorId: req.user.id,
             type: 'NOTE',
             text: String(notes).trim(),
+            ccRoles: validatedCcRoles,
           },
         })
       }

@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma.js'
 import { isPinRequired, verifySigningPin } from '../lib/signatures.js'
 import { logAudit } from '../lib/audit.js'
 import { generateRegistryNo } from '../lib/registry.js'
+import { validateCcRoles } from '../lib/roles.js'
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
@@ -15,8 +16,15 @@ router.use(authenticate)
 // POST /api/circulation - Initialize a new document circulation
 router.post('/', async (req, res) => {
   try {
-    const { title, sourceType, sourceId, toRole, instruction } = req.body
+    const { title, sourceType, sourceId, toRole, instruction, ccRoles } = req.body
     const originatorId = req.user.id
+
+    let validatedCcRoles
+    try {
+      validatedCcRoles = validateCcRoles(ccRoles)
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message })
+    }
 
     if (sourceType === 'DRAFT_DOCUMENT') {
       const draft = await prisma.draftDocument.findUnique({ where: { id: sourceId } })
@@ -43,6 +51,7 @@ router.post('/', async (req, res) => {
               fromUserId: originatorId,
               fromRole: req.user.role,
               toRole,
+              ccRoles: validatedCcRoles,
               instruction,
               stepType: 'FORWARD',
               recordsCopies: {
@@ -74,7 +83,14 @@ router.post('/', async (req, res) => {
 router.post('/:id/step', async (req, res) => {
   try {
     const { id } = req.params
-    const { toRole, instruction, stepType, decision, amount } = req.body
+    const { toRole, instruction, stepType, decision, amount, ccRoles } = req.body
+
+    let validatedCcRoles
+    try {
+      validatedCcRoles = validateCcRoles(ccRoles)
+    } catch (err) {
+      return res.status(400).json({ success: false, message: err.message })
+    }
 
     const existingCirculation = await prisma.documentCirculation.findUnique({
       where: { id },
@@ -117,6 +133,7 @@ router.post('/:id/step', async (req, res) => {
           fromUserId: req.user.id,
           fromRole: req.user.role,
           toRole,
+          ccRoles: validatedCcRoles,
           instruction,
           stepType,
           decision,

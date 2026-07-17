@@ -227,6 +227,7 @@ model Annotation {
   author          User           @relation(fields: [authorId], references: [id])
   type            String         @default("COMMENT") // COMMENT, NOTE, ACTION, FLAG
   text            String
+  ccRoles         String[]       @default([]) // informed-only roles, grants view access same as circulation CC
   createdAt       DateTime       @default(now())
 
   // Application layer must enforce: exactly one of registryEntryId / documentId is set.
@@ -370,6 +371,7 @@ model CirculationStep {
   fromRole        String
   toUserId        Int?     // nullable if routed to a role generally, not a specific person
   toRole          String
+  ccRoles         String[] @default([]) // informed-only roles — never granted currentHolderRole, never actionable
   instruction     String   @db.Text // the annotation text, e.g. "Please verify"
   stepType        String   // FORWARD, VERIFICATION_REQUEST, VERIFICATION_RESPONSE,
                             // APPROVAL, FINAL_DECISION, RETURNED_FOR_CORRECTION, RESUBMITTED

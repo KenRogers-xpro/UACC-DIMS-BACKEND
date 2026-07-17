@@ -15,9 +15,18 @@ export async function canViewDocument(document, user) {
     where: {
       sourceType: 'DOCUMENT',
       sourceId: String(document.id),
-      steps: { some: { OR: [{ fromRole: user.role }, { toRole: user.role }] } },
+      steps: { some: { OR: [{ fromRole: user.role }, { toRole: user.role }, { ccRoles: { has: user.role } }] } },
     },
     select: { id: true },
   })
-  return Boolean(touchedIt)
+  if (touchedIt) return true
+
+  // Annotation CC grants visibility the same way circulation CC does — a
+  // role named here has been informed about the document even if it never
+  // touched the circulation itself.
+  const ccdViaAnnotation = await prisma.annotation.findFirst({
+    where: { documentId: document.id, ccRoles: { has: user.role } },
+    select: { id: true },
+  })
+  return Boolean(ccdViaAnnotation)
 }

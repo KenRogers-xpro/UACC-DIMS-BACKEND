@@ -7,6 +7,7 @@ import { generateRegistryNo } from '../lib/registry.js'
 import { ingestDocument, removeDocumentEmbedding, semanticSearchDocuments } from '../lib/embeddings.js'
 import { uploadFile } from '../lib/cloudinary.js'
 import { canViewDocument } from '../lib/documentAccess.js'
+import { validateCcRoles } from '../lib/roles.js'
 import multer from 'multer'
 
 const router  = Router()
@@ -102,25 +103,34 @@ router.get('/', authenticate, async (req, res) => {
     // Module-history-based access:
     //  - RECORDS_EXECUTIVE / GENERAL_MANAGER: broad access, see everything.
     //  - Everyone else: their own uploads, plus any document that has ever
-    //    passed through their role in a circulation (fromRole or toRole on
-    //    any CirculationStep of a DocumentCirculation sourced from it). A
-    //    document that's still PRIVATE has no circulation yet, so it's only
-    //    reachable via the "own uploads" branch — consistent with staging.
+    //    passed through their role in a circulation (fromRole, toRole, or
+    //    ccRoles on any CirculationStep of a DocumentCirculation sourced
+    //    from it), plus any document they've been CC'd on via an annotation.
+    //    A document that's still PRIVATE has no circulation yet, so it's
+    //    only reachable via the "own uploads" branch — consistent with
+    //    staging.
     const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
     let visibility = {}
     if (!hasBroadAccess) {
-      const touchedCirculations = await prisma.documentCirculation.findMany({
-        where: {
-          sourceType: 'DOCUMENT',
-          steps: { some: { OR: [{ fromRole: req.user.role }, { toRole: req.user.role }] } },
-        },
-        select: { sourceId: true },
-      })
+      const [touchedCirculations, ccdAnnotations] = await Promise.all([
+        prisma.documentCirculation.findMany({
+          where: {
+            sourceType: 'DOCUMENT',
+            steps: { some: { OR: [{ fromRole: req.user.role }, { toRole: req.user.role }, { ccRoles: { has: req.user.role } }] } },
+          },
+          select: { sourceId: true },
+        }),
+        prisma.annotation.findMany({
+          where: { documentId: { not: null }, ccRoles: { has: req.user.role } },
+          select: { documentId: true },
+        }),
+      ])
       const touchedDocumentIds = touchedCirculations
         .map((c) => parseInt(c.sourceId, 10))
         .filter((n) => Number.isInteger(n))
+      const ccdDocumentIds = ccdAnnotations.map((a) => a.documentId)
 
-      visibility = { OR: [{ uploadedBy: req.user.id }, { id: { in: touchedDocumentIds } }] }
+      visibility = { OR: [{ uploadedBy: req.user.id }, { id: { in: [...touchedDocumentIds, ...ccdDocumentIds] } }] }
     }
 
     const stateFilter = await buildStateFilter(state.toUpperCase(), req.user)
@@ -260,21 +270,7 @@ router.get('/:id', authenticate, async (req, res) => {
       select: DOCUMENT_SELECT,
     })
     if (!document) return notFound(res, 'Document not found')
-
-    const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
-    const isOwner = document.uploadedBy === req.user.id
-
-    if (!hasBroadAccess && !isOwner) {
-      const touchedIt = document.status !== 'PRIVATE' && await prisma.documentCirculation.findFirst({
-        where: {
-          sourceType: 'DOCUMENT',
-          sourceId: String(document.id),
-          steps: { some: { OR: [{ fromRole: req.user.role }, { toRole: req.user.role }] } },
-        },
-        select: { id: true },
-      })
-      if (!touchedIt) return notFound(res, 'Document not found')
-    }
+    if (!(await canViewDocument(document, req.user))) return notFound(res, 'Document not found')
 
     return success(res, document)
   } catch (err) {
@@ -301,20 +297,7 @@ router.get('/:id/file', authenticate, async (req, res) => {
       select: { id: true, uploadedBy: true, status: true, filePath: true, mimeType: true, fileData: true },
     })
     if (!document || (!document.fileData && !document.filePath)) return notFound(res, 'Document not found')
-
-    const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
-    const isOwner = document.uploadedBy === req.user.id
-    if (!hasBroadAccess && !isOwner) {
-      const touchedIt = document.status !== 'PRIVATE' && await prisma.documentCirculation.findFirst({
-        where: {
-          sourceType: 'DOCUMENT',
-          sourceId: String(document.id),
-          steps: { some: { OR: [{ fromRole: req.user.role }, { toRole: req.user.role }] } },
-        },
-        select: { id: true },
-      })
-      if (!touchedIt) return notFound(res, 'Document not found')
-    }
+    if (!(await canViewDocument(document, req.user))) return notFound(res, 'Document not found')
 
     if (!document.fileData) {
       if (!/^https?:\/\//.test(document.filePath)) return notFound(res, 'Document not found')
@@ -354,8 +337,15 @@ router.get('/:id/annotations', authenticate, async (req, res) => {
 router.post('/:id/annotations', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const { text, type = 'COMMENT' } = req.body
+    const { text, type = 'COMMENT', ccRoles } = req.body
     if (!text || !String(text).trim()) return error(res, 'Annotation text is required')
+
+    let validatedCcRoles
+    try {
+      validatedCcRoles = validateCcRoles(ccRoles)
+    } catch (err) {
+      return error(res, err.message)
+    }
 
     const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
@@ -367,6 +357,7 @@ router.post('/:id/annotations', authenticate, async (req, res) => {
         authorId: req.user.id,
         type,
         text: String(text).trim(),
+        ccRoles: validatedCcRoles,
       },
       include: { author: { select: { id: true, name: true, role: true } } },
     })
@@ -468,8 +459,15 @@ router.put('/:id', authenticate, async (req, res) => {
 router.post('/:id/submit', authenticate, async (req, res) => {
   try {
     const id = parseInt(req.params.id)
-    const { toRole, instruction } = req.body
+    const { toRole, instruction, ccRoles } = req.body
     if (!toRole) return error(res, 'toRole is required')
+
+    let validatedCcRoles
+    try {
+      validatedCcRoles = validateCcRoles(ccRoles)
+    } catch (err) {
+      return error(res, err.message)
+    }
 
     const document = await prisma.document.findUnique({ where: { id }, select: DOCUMENT_SELECT })
     if (!document) return notFound(res, 'Document not found')
@@ -504,6 +502,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
               fromUserId: req.user.id,
               fromRole: req.user.role,
               toRole,
+              ccRoles: validatedCcRoles,
               instruction: instruction || `Submitted "${document.title}" for review.`,
               stepType: 'FORWARD',
               recordsCopies: { create: { status: 'PENDING_FILING' } },
