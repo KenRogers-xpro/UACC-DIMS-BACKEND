@@ -8,6 +8,7 @@ import { ingestDocument, removeDocumentEmbedding, semanticSearchDocuments } from
 import { uploadFile } from '../lib/cloudinary.js'
 import { canViewDocument } from '../lib/documentAccess.js'
 import { validateCcRoles, resolveHeldByRole } from '../lib/roles.js'
+import { computeNewArrivalIds } from '../lib/newArrivals.js'
 import multer from 'multer'
 
 const router  = Router()
@@ -35,8 +36,6 @@ const DOCUMENT_SELECT = {
   uploader: { select: { id: true, name: true, role: true } },
 }
 
-const NEW_ARRIVAL_WINDOW_MS = 48 * 60 * 60 * 1000
-
 // Builds a Prisma `where` fragment for the "state" tab filter on the
 // Documents page: NEW (just landed with this role), PENDING (awaiting this
 // role's action, or the user's own unsubmitted drafts), IN_CIRCULATION
@@ -57,15 +56,10 @@ async function buildStateFilter(state, user) {
     // viewed (DocumentViewerModal marks NEW_ARRIVAL read on open), it falls
     // through to Pending even if still inside the recency window. Not a
     // permanent category, just a since-I-last-looked surface.
-    const readRows = await prisma.notificationRead.findMany({
-      where: { userId: user.id, sourceType: 'NEW_ARRIVAL', sourceId: { in: myCirculations.map((c) => c.id) } },
-      select: { sourceId: true },
-    })
-    const viewedSet = new Set(readRows.map((r) => r.sourceId))
-    const isNew = (c) => (Date.now() - new Date(c.updatedAt).getTime()) < NEW_ARRIVAL_WINDOW_MS && !viewedSet.has(c.id)
+    const newIds = await computeNewArrivalIds(user.id, myCirculations)
 
     const ids = myCirculations
-      .filter((c) => (state === 'NEW' ? isNew(c) : !isNew(c)))
+      .filter((c) => (state === 'NEW' ? newIds.has(c.id) : !newIds.has(c.id)))
       .map((c) => parseInt(c.sourceId, 10))
       .filter(Number.isInteger)
 

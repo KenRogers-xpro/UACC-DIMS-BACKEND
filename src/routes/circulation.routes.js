@@ -7,6 +7,7 @@ import { isPinRequired, verifySigningPin } from '../lib/signatures.js'
 import { logAudit } from '../lib/audit.js'
 import { generateRegistryNo } from '../lib/registry.js'
 import { validateCcRoles, resolveHeldByRole } from '../lib/roles.js'
+import { computeNewArrivalIds } from '../lib/newArrivals.js'
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
@@ -549,7 +550,14 @@ router.get('/pa-gateway', authorize(['GM_PERSONAL_ASSISTANT']), async (req, res)
   }
 })
 
-// GET /api/circulation/inbox - Get documents currently with the user's role
+// GET /api/circulation/inbox - New arrivals: documents currently with the
+// user's role that they haven't opened yet. Sole consumer is the New
+// Arrivals tab's awaiting-action panel — filtered to the same "recent AND
+// unviewed" set as documents.routes.js's buildStateFilter(state=NEW), via
+// the shared computeNewArrivalIds, so the panel and the tab's own count can
+// never disagree. A held item that's been viewed (or has simply gone stale)
+// correctly stops showing up here and falls through to the Pending My
+// Action tab instead, rather than lingering in both places at once.
 router.get('/inbox', async (req, res) => {
   try {
     const circulations = await prisma.documentCirculation.findMany({
@@ -562,7 +570,9 @@ router.get('/inbox', async (req, res) => {
       },
       orderBy: { updatedAt: 'desc' }
     })
-    return res.json({ success: true, circulations })
+    const newIds = await computeNewArrivalIds(req.user.id, circulations)
+    const newArrivals = circulations.filter((c) => newIds.has(c.id))
+    return res.json({ success: true, circulations: newArrivals })
   } catch (error) {
     console.error('Error fetching circulation inbox:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
