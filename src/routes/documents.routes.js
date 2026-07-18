@@ -7,7 +7,7 @@ import { generateRegistryNo } from '../lib/registry.js'
 import { ingestDocument, removeDocumentEmbedding, semanticSearchDocuments } from '../lib/embeddings.js'
 import { uploadFile } from '../lib/cloudinary.js'
 import { canViewDocument } from '../lib/documentAccess.js'
-import { validateCcRoles } from '../lib/roles.js'
+import { validateCcRoles, resolveHeldByRole } from '../lib/roles.js'
 import multer from 'multer'
 
 const router  = Router()
@@ -480,6 +480,11 @@ router.post('/:id/submit', authenticate, async (req, res) => {
     }
 
     const registryNo = await generateRegistryNo()
+    // This is a real entry point into circulation (a document's initial
+    // submit), not covered by circulation.routes.js at all — missing
+    // gatekeeping here would mean submitting straight to the GM was the one
+    // way to bypass the PA entirely.
+    const heldByRole = resolveHeldByRole(req.user.role, toRole)
 
     const result = await prisma.$transaction(async (tx) => {
       const updatedDocument = await tx.document.update({
@@ -494,7 +499,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
           sourceType: 'DOCUMENT',
           sourceId: String(document.id),
           originatorId: req.user.id,
-          currentHolderRole: toRole,
+          currentHolderRole: heldByRole,
           status: 'IN_CIRCULATION',
           steps: {
             create: {
@@ -502,6 +507,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
               fromUserId: req.user.id,
               fromRole: req.user.role,
               toRole,
+              heldByRole,
               ccRoles: validatedCcRoles,
               instruction: instruction || `Submitted "${document.title}" for review.`,
               stepType: 'FORWARD',

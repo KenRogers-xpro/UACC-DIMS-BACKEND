@@ -1,12 +1,12 @@
 import express from 'express'
 import crypto from 'crypto'
 import multer from 'multer'
-import { authenticate } from '../middleware/auth.js'
+import { authenticate, authorize } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
 import { isPinRequired, verifySigningPin } from '../lib/signatures.js'
 import { logAudit } from '../lib/audit.js'
 import { generateRegistryNo } from '../lib/registry.js'
-import { validateCcRoles } from '../lib/roles.js'
+import { validateCcRoles, resolveHeldByRole } from '../lib/roles.js'
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
@@ -36,6 +36,8 @@ router.post('/', async (req, res) => {
       }
     }
 
+    const heldByRole = resolveHeldByRole(req.user.role, toRole)
+
     const circulation = await prisma.$transaction(async (tx) => {
       return await tx.documentCirculation.create({
         data: {
@@ -43,7 +45,7 @@ router.post('/', async (req, res) => {
           sourceType,
           sourceId,
           originatorId,
-          currentHolderRole: toRole,
+          currentHolderRole: heldByRole,
           status: 'IN_CIRCULATION',
           steps: {
             create: {
@@ -51,6 +53,7 @@ router.post('/', async (req, res) => {
               fromUserId: originatorId,
               fromRole: req.user.role,
               toRole,
+              heldByRole,
               ccRoles: validatedCcRoles,
               instruction,
               stepType: 'FORWARD',
@@ -114,13 +117,14 @@ router.post('/:id/step', async (req, res) => {
       ? existingCirculation.steps[0].stepNumber + 1
       : 1
     const newStatus = stepType === 'FINAL_DECISION' ? 'CLOSED' : 'IN_CIRCULATION'
+    const heldByRole = resolveHeldByRole(req.user.role, toRole)
 
     const step = await prisma.$transaction(async (tx) => {
       // 1. Update Circulation
       await tx.documentCirculation.update({
         where: { id },
         data: {
-          currentHolderRole: toRole,
+          currentHolderRole: heldByRole,
           status: newStatus
         }
       })
@@ -133,6 +137,7 @@ router.post('/:id/step', async (req, res) => {
           fromUserId: req.user.id,
           fromRole: req.user.role,
           toRole,
+          heldByRole,
           ccRoles: validatedCcRoles,
           instruction,
           stepType,
@@ -212,11 +217,15 @@ router.post('/:id/sign', async (req, res) => {
       .createHash('sha256')
       .update(`${req.user.id}:${resolvedDecision}:${signedAt.toISOString()}:${previousHash || ''}`)
       .digest('hex')
+    // Same gatekeeping rule as POST /:id/step — signing is just another way
+    // a step gets created, and leaving it out would be a straightforward
+    // bypass of gatekeeping via the "sign" flow instead of the generic one.
+    const heldByRole = resolveHeldByRole(req.user.role, toRole)
 
     const step = await prisma.$transaction(async (tx) => {
       await tx.documentCirculation.update({
         where: { id },
-        data: { currentHolderRole: toRole, status: newStatus },
+        data: { currentHolderRole: heldByRole, status: newStatus },
       })
 
       return tx.circulationStep.create({
@@ -226,6 +235,7 @@ router.post('/:id/sign', async (req, res) => {
           fromUserId: req.user.id,
           fromRole: req.user.role,
           toRole,
+          heldByRole,
           instruction,
           stepType,
           decision,
@@ -252,6 +262,76 @@ router.post('/:id/sign', async (req, res) => {
     return res.status(201).json({ success: true, step })
   } catch (error) {
     console.error('Error signing circulation step:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// PUT /api/circulation/:id/release — PA-only. Lifts gatekeeping on an item
+// currently sitting in the GM<->PA gateway, sending it on to the role it was
+// actually declared for all along (the previous step's toRole, untouched
+// throughout gatekeeping). Works both directions: an inbound item finally
+// reaching the GM, or the GM's own outgoing item finally leaving PA's hands.
+// heldByRole is set directly to that declared role here (not run back through
+// resolveHeldByRole) — this step IS the deliberate hand-off, so it must not
+// immediately re-gatekeep itself.
+router.put('/:id/release', authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
+  try {
+    const { id } = req.params
+    const { note } = req.body
+
+    const existingCirculation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: { steps: { orderBy: { stepNumber: 'desc' }, take: 1 } },
+    })
+    if (!existingCirculation) {
+      return res.status(404).json({ success: false, message: 'Circulation not found' })
+    }
+    if (existingCirculation.currentHolderRole !== 'GM_PERSONAL_ASSISTANT') {
+      return res.status(403).json({ success: false, message: 'This item is not currently gatekept by the PA' })
+    }
+
+    const previousStep = existingCirculation.steps[0]
+    const declaredRole = previousStep?.toRole
+    if (!declaredRole) {
+      return res.status(500).json({ success: false, message: 'Circulation has no prior step to release toward' })
+    }
+
+    const nextStepNumber = previousStep ? previousStep.stepNumber + 1 : 1
+    const trimmedNote = note && String(note).trim() ? String(note).trim() : null
+
+    const step = await prisma.$transaction(async (tx) => {
+      await tx.documentCirculation.update({
+        where: { id },
+        data: { currentHolderRole: declaredRole },
+      })
+
+      return tx.circulationStep.create({
+        data: {
+          circulationId: id,
+          stepNumber: nextStepNumber,
+          fromUserId: req.user.id,
+          fromRole: req.user.role,
+          toRole: declaredRole,
+          heldByRole: declaredRole,
+          instruction: trimmedNote || 'Reviewed by PA, released to recipient.',
+          stepType: 'PA_RELEASE',
+          recordsCopies: { create: { status: 'PENDING_FILING' } },
+        },
+        include: { recordsCopies: true },
+      })
+    })
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'PA_TRIAGED_DOCUMENT',
+      module: 'Circulation',
+      description: `Released "${existingCirculation.title}" to ${declaredRole}${trimmedNote ? ` — Note: ${trimmedNote}` : ''}`,
+      ipAddress: req.ip,
+    })
+
+    return res.status(201).json({ success: true, step })
+  } catch (error) {
+    console.error('Error releasing circulation:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })
@@ -424,6 +504,47 @@ router.get('/:id/attachments', async (req, res) => {
     return res.json({ success: true, attachments })
   } catch (error) {
     console.error('Error fetching circulation attachments:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// GET /api/circulation/pa-gateway — PA's actual job description: everything
+// currently gatekept through them, split by direction. "toGM" is things
+// waiting to reach the GM; "fromGM" is things the GM sent that haven't
+// actually left PA's hands yet. Deliberately excludes items genuinely
+// addressed TO the PA herself (toRole === GM_PERSONAL_ASSISTANT) — those are
+// PA's own direct correspondence, not something she's gatekeeping, even
+// though they also carry currentHolderRole === GM_PERSONAL_ASSISTANT.
+router.get('/pa-gateway', authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
+  try {
+    const gatekept = await prisma.documentCirculation.findMany({
+      where: { currentHolderRole: 'GM_PERSONAL_ASSISTANT', status: 'IN_CIRCULATION' },
+      include: {
+        originator: { select: { id: true, name: true, email: true } },
+        // Full trail, ascending — steps[0] is the true originating step
+        // (needed for "Return for Correction" to route back to whoever
+        // actually started this, not to the GM/PA the gate sits between),
+        // the last entry is the latest/declared-destination step.
+        steps: {
+          orderBy: { stepNumber: 'asc' },
+          include: { fromUser: { select: { id: true, name: true } } },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    })
+
+    const toGM = []
+    const fromGM = []
+    for (const c of gatekept) {
+      const latest = c.steps[c.steps.length - 1]
+      if (!latest || latest.toRole === 'GM_PERSONAL_ASSISTANT') continue
+      if (latest.toRole === 'GENERAL_MANAGER') toGM.push(c)
+      else if (latest.fromRole === 'GENERAL_MANAGER') fromGM.push(c)
+    }
+
+    return res.json({ success: true, toGM, fromGM })
+  } catch (error) {
+    console.error('Error fetching PA gateway:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })

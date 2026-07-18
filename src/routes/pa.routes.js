@@ -69,12 +69,18 @@ function uniqueByEmail(users) {
   return uniqueUsers
 }
 
-// GET /api/pa/inbox
+// GET /api/pa/inbox — pre-dates GM gatekeeping (Directive 1/2): items headed
+// to the GM now carry currentHolderRole GM_PERSONAL_ASSISTANT, not
+// GENERAL_MANAGER, so this query has to match /circulation/pa-gateway's
+// "toGM" filter rather than the literal GM role, or it would silently start
+// returning nothing the moment gatekeeping shipped. Kept alongside the newer
+// /circulation/pa-gateway endpoint (which also returns "fromGM") since
+// PADashboard's stat card already depends on this exact response shape.
 router.get('/inbox', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (req, res) => {
   try {
     const circulations = await prisma.documentCirculation.findMany({
-      where: { 
-        currentHolderRole: 'GENERAL_MANAGER',
+      where: {
+        currentHolderRole: 'GM_PERSONAL_ASSISTANT',
         status: 'IN_CIRCULATION'
       },
       include: {
@@ -89,7 +95,12 @@ router.get('/inbox', authenticate, authorize(['GM_PERSONAL_ASSISTANT']), async (
       orderBy: { updatedAt: 'desc' },
     })
 
-    return success(res, circulations)
+    const toGM = circulations.filter((c) => {
+      const latest = c.steps[c.steps.length - 1]
+      return latest?.toRole === 'GENERAL_MANAGER'
+    })
+
+    return success(res, toGM)
   } catch (err) {
     return serverError(res, err)
   }
@@ -113,8 +124,8 @@ router.put('/inbox/:id/forward', authenticate, authorize(['GM_PERSONAL_ASSISTANT
 
     if (!existingCirculation) return notFound(res, 'Circulation not found')
 
-    if (existingCirculation.currentHolderRole !== 'GENERAL_MANAGER') {
-      return error(res, 'Circulation is not currently with the GM', 403)
+    if (existingCirculation.currentHolderRole !== 'GM_PERSONAL_ASSISTANT') {
+      return error(res, 'Circulation is not currently gatekept with the PA', 403)
     }
 
     const nextStepNumber = existingCirculation.steps.length > 0 ? existingCirculation.steps[0].stepNumber + 1 : 1
@@ -124,6 +135,9 @@ router.put('/inbox/:id/forward', authenticate, authorize(['GM_PERSONAL_ASSISTANT
       await tx.documentCirculation.update({
         where: { id },
         data: {
+          // toRole directly, not resolveHeldByRole(...) — this IS the PA's
+          // deliberate act of triaging past the gate, same as /release, so
+          // it must not immediately re-gatekeep itself back to the PA.
           currentHolderRole: toRole,
           status: 'IN_CIRCULATION'
         }
@@ -136,6 +150,7 @@ router.put('/inbox/:id/forward', authenticate, authorize(['GM_PERSONAL_ASSISTANT
           fromUserId: req.user.id,
           fromRole: 'GENERAL_MANAGER', // PA acting on behalf of GM
           toRole,
+          heldByRole: toRole,
           instruction: note,
           stepType: 'FORWARD',
           decision,

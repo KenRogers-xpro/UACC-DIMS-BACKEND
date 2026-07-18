@@ -31,3 +31,19 @@ export function validateCcRoles(ccRoles) {
   }
   return [...seen]
 }
+
+// GM gatekeeping: any step where the General Manager is either party gets
+// intercepted by the GM Personal Assistant — inbound (X -> GM) or outbound
+// (GM -> X) — so heldByRole (who must actually act) diverges from toRole
+// (who it's declared for). The one exception is the direct GM<->PA channel
+// itself: gatekeeping happens THROUGH that channel, so it can't gatekeep
+// itself, or nothing would ever reach the PA to release in the first place.
+export function resolveHeldByRole(fromRole, toRole) {
+  const GM = 'GENERAL_MANAGER'
+  const PA = 'GM_PERSONAL_ASSISTANT'
+  const involvesGM = fromRole === GM || toRole === GM
+  const isDirectGmPaChannel =
+    (fromRole === GM && toRole === PA) || (fromRole === PA && toRole === GM)
+  if (involvesGM && !isDirectGmPaChannel) return PA
+  return toRole
+}

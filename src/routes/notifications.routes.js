@@ -112,7 +112,10 @@ router.get('/', authenticate, async (req, res) => {
         title: c.title,
         subtitle: c.status === 'CLOSED'
           ? 'Closed — final decision recorded'
-          : `Now with ${latest.toRole.replace(/_/g, ' ')}`,
+          // currentHolderRole, not latest.toRole — under GM gatekeeping the
+          // two diverge (declared destination vs. who actually has it), and
+          // this line is specifically answering "who has it right now."
+          : `Now with ${c.currentHolderRole.replace(/_/g, ' ')}`,
         createdAt: latest.signedAt || c.updatedAt,
         link: '/dashboard/documents?tab=circulating',
       })
