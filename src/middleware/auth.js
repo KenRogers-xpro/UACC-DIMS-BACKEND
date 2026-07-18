@@ -32,10 +32,19 @@ export async function authenticate(req, res, next) {
     // Fire-and-forget "last seen" tracking — piggybacks on requests that are
     // already happening, no extra round trip. Never blocks the response,
     // and a failure here shouldn't fail the request it's riding on.
-    prisma.user.update({
-      where: { id: user.id },
-      data: { lastSeenAt: new Date() },
-    }).catch((err) => console.error('Failed to update lastSeenAt:', err.message))
+    //
+    // Excluded: /api/auth/logout. That route runs through this same
+    // middleware (it needs req.user) and then sets isLoggedIn: false —
+    // if this bump were allowed to fire too, it's an unawaited write racing
+    // an awaited one on the same row, so which one lands last is undefined.
+    // Skipping it here entirely, rather than trying to out-order it from the
+    // logout handler, means there's no race to reason about at all.
+    if (req.originalUrl !== '/api/auth/logout') {
+      prisma.user.update({
+        where: { id: user.id },
+        data: { lastSeenAt: new Date() },
+      }).catch((err) => console.error('Failed to update lastSeenAt:', err.message))
+    }
 
     next()
   } catch (error) {

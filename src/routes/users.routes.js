@@ -12,6 +12,21 @@ const router = Router()
 
 const ONLINE_WINDOW_MS = 5 * 60 * 1000
 
+// isOnline requires BOTH conditions, not just lastSeenAt recency:
+//  - isLoggedIn: explicit session state, set true on login / false on
+//    logout — without this, logging out couldn't turn isOnline off any
+//    faster than lastSeenAt happened to go stale (up to ONLINE_WINDOW_MS
+//    later), since JWT auth has no server-side session to actually end.
+//  - lastSeenAt within the window: catches the opposite gap — a user who
+//    closes the tab/loses connectivity without ever calling /logout stays
+//    isLoggedIn: true indefinitely, so recency is still what correctly
+//    flips them to offline.
+// isLoggedIn alone is NOT "currently online" — it only means "hasn't
+// explicitly logged out," which is a different, weaker claim.
+function computeIsOnline(user) {
+  return user.isLoggedIn && Boolean(user.lastSeenAt) && (Date.now() - new Date(user.lastSeenAt).getTime()) < ONLINE_WINDOW_MS
+}
+
 function generateTempPassword() {
   // 12 random hex chars — not shown in any API response, only emailed
   // (via the stubbed sender, see lib/email.js) and logged server-side.
@@ -25,12 +40,11 @@ router.get('/online-status', authenticate, async (req, res) => {
   try {
     const users = await prisma.user.findMany({
       where: { isActive: true },
-      select: { id: true, name: true, role: true, lastSeenAt: true },
+      select: { id: true, name: true, role: true, isLoggedIn: true, lastSeenAt: true },
     })
-    const now = Date.now()
     const withStatus = users.map((u) => ({
       ...u,
-      isOnline: u.lastSeenAt ? (now - new Date(u.lastSeenAt).getTime()) < ONLINE_WINDOW_MS : false,
+      isOnline: computeIsOnline(u),
     }))
     return success(res, {
       users: withStatus,
@@ -64,15 +78,15 @@ router.get('/', authenticate, authorize('IT_ADMINISTRATOR'), async (req, res) =>
       where,
       select: {
         id: true, name: true, email: true, role: true,
-        department: true, isActive: true, createdAt: true, lastSeenAt: true,
+        department: true, isActive: true, createdAt: true,
+        isLoggedIn: true, lastSeenAt: true,
       },
       orderBy: { createdAt: 'asc' },
     })
 
-    const now = Date.now()
     const withStatus = users.map((u) => ({
       ...u,
-      isOnline: u.lastSeenAt ? (now - new Date(u.lastSeenAt).getTime()) < ONLINE_WINDOW_MS : false,
+      isOnline: computeIsOnline(u),
     }))
 
     return success(res, withStatus)

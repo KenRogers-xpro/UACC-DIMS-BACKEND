@@ -29,6 +29,15 @@ router.post('/login', async (req, res) => {
     const passwordMatch = await bcrypt.compare(String(password), user.password)
     if (!passwordMatch) return error(res, 'Invalid email or password', 401)
 
+    // lastSeenAt too, not just isLoggedIn — the authenticate middleware only
+    // bumps lastSeenAt on the NEXT authenticated request, so without this a
+    // user who just logged in could still read as offline (isLoggedIn true,
+    // but lastSeenAt stale or null from a previous session) until then.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { isLoggedIn: true, lastSeenAt: new Date() },
+    })
+
     const token = generateToken({
       id:         user.id,
       email:      user.email,
@@ -60,9 +69,17 @@ router.post('/login', async (req, res) => {
   }
 })
 
-// POST /api/auth/logout
+// POST /api/auth/logout — explicit isLoggedIn: false. authenticate (see
+// middleware/auth.js) special-cases this exact route to skip its usual
+// fire-and-forget lastSeenAt bump, so that update can never race this one
+// and leave lastSeenAt looking freshly-active right as the session ends.
 router.post('/logout', authenticate, async (req, res) => {
   try {
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { isLoggedIn: false },
+    })
+
     await logAudit({
       userId:      req.user.id,
       action:      'LOGOUT',
