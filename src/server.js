@@ -19,6 +19,7 @@ import auditTrailRoutes from './routes/auditTrail.routes.js'
 import paRoutes from './routes/pa.routes.js'
 import aiRoutes from './routes/ai.routes.js'
 import dashboardRoutes from './routes/dashboard.routes.js'
+import reportsRoutes from './routes/reports.routes.js'
 import circulationRoutes from './routes/circulation.routes.js'
 import messageRoutes from './routes/messages.routes.js'
 import announcementRoutes from './routes/announcements.routes.js'
@@ -128,6 +129,7 @@ app.use('/api/audit-trail', auditTrailRoutes)
 app.use('/api/pa', paRoutes)
 app.use('/api/ai', aiLimiter, aiRoutes)
 app.use('/api/dashboard', dashboardRoutes)
+app.use('/api/reports', reportsRoutes)
 app.use('/api/circulation', circulationRoutes)
 app.use('/api/messages', pollingLimiter, messageRoutes)
 app.use('/api/announcements', pollingLimiter, announcementRoutes)
