@@ -202,6 +202,10 @@ model RegistryEntry {
 
 // Freeform, Records-Executive-controlled dossier. Not a fixed taxonomy —
 // RE decides what folders exist (personal files, officer files, asset files, etc).
+// No delete route exists for this model. TRIPWIRE for whoever adds one:
+// deletion must check entries.length === 0 AND filedCopies.length === 0 first
+// — a dossier with either is part of the permanent record, same rule as
+// documents.routes.js DELETE /:id for Document + circulation history.
 model RecordsFile {
   id            String   @id @default(cuid())
   fileNumber    String   @unique
@@ -349,6 +353,7 @@ model DocumentCirculation {
   steps             CirculationStep[]
   dispatchRecord    DispatchRecord?
   attachments       CirculationAttachment[]
+  recordsCopy       CirculationRecordsCopy?
 }
 
 model CirculationAttachment {
@@ -393,10 +398,18 @@ model CirculationStep {
   signature       DigitalSignature?
 }
 
+// One package per CLOSED circulation, created explicitly via
+// POST /api/circulation/:id/send-to-file — never auto-created on a step or
+// signature anymore (see circulation.routes.js). circulationId is the real
+// link the Filing Queue resolves the document + full step trail through;
+// circulationStepId is kept only as "the closing step, for reference" and
+// is no longer what creates this row.
 model CirculationRecordsCopy {
   id                String    @id @default(cuid())
-  circulationStepId String
-  step              CirculationStep @relation(fields: [circulationStepId], references: [id])
+  circulationId     String    @unique
+  circulation       DocumentCirculation @relation(fields: [circulationId], references: [id])
+  circulationStepId String?
+  step              CirculationStep? @relation(fields: [circulationStepId], references: [id])
   status            String    @default("PENDING_FILING") // PENDING_FILING, FILED
 
   // Optional dossier this copy was filed into — set at filing time via the

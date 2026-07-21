@@ -360,25 +360,68 @@ router.put('/:entryId/attach-to-file', authenticate, authorize(['RECORDS_EXECUTI
   }
 })
 
-// GET /api/records/circulation-copies
+// GET /api/records/circulation-copies — one row per CLOSED-and-sent-to-file
+// circulation (see circulation.routes.js POST /:id/send-to-file). Each row
+// now carries the FULL package: the real originating Document (resolved
+// below) and the complete ordered step/signature trail — not just the
+// closing step's single instruction string, so the Filing Queue can render
+// what's actually being filed instead of a bare quoted line.
 router.get('/circulation-copies', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
   try {
     const { status = 'PENDING_FILING' } = req.query
     const copies = await prisma.circulationRecordsCopy.findMany({
       where: { status },
       include: {
-        step: {
+        circulation: {
           include: {
-            circulation: true,
-            fromUser: { select: { id: true, name: true, role: true } }
-          }
+            steps: {
+              orderBy: { stepNumber: 'asc' },
+              include: {
+                signature: true,
+                fromUser: { select: { id: true, name: true, role: true } },
+              },
+            },
+            originator: { select: { id: true, name: true, role: true } },
+            attachments: {
+              include: {
+                document: { select: { id: true, title: true, mimeType: true, fileSize: true } },
+                attachedBy: { select: { id: true, name: true } },
+              },
+            },
+          },
         },
+        step: true, // the closing step, kept only for reference — see schema.prisma
         recordsFile: true,
         filedBy: { select: { id: true, name: true, role: true } },
       },
       orderBy: { createdAt: 'desc' }
     })
-    return success(res, copies)
+
+    // Resolve the real source Document for each package, same batched
+    // pattern as the notifications fix (notifications.routes.js) — one
+    // query for every referenced document instead of N+1.
+    const documentIds = [...new Set(
+      copies
+        .filter((c) => c.circulation?.sourceType === 'DOCUMENT' && c.circulation.sourceId)
+        .map((c) => parseInt(c.circulation.sourceId, 10))
+        .filter((id) => !Number.isNaN(id))
+    )]
+    const sourceDocuments = documentIds.length
+      ? await prisma.document.findMany({
+          where: { id: { in: documentIds } },
+          select: { id: true, title: true, category: true, department: true, filePath: true, mimeType: true, fileSize: true, createdAt: true },
+        })
+      : []
+    const documentsById = new Map(sourceDocuments.map((d) => [d.id, d]))
+
+    const copiesWithDocument = copies.map((c) => ({
+      ...c,
+      document: c.circulation?.sourceType === 'DOCUMENT'
+        ? documentsById.get(parseInt(c.circulation.sourceId, 10)) || null
+        : null,
+    }))
+
+    return success(res, copiesWithDocument)
   } catch (err) {
     return serverError(res, err)
   }

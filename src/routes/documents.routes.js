@@ -394,6 +394,9 @@ router.get('/:id/circulation', authenticate, async (req, res) => {
             },
           },
         },
+        // Lets the viewer show "Send to File" vs. "Already sent to file"
+        // without a separate lookup — see POST /api/circulation/:id/send-to-file.
+        recordsCopy: true,
       },
     })
 

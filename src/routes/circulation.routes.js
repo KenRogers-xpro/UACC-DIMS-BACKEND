@@ -58,20 +58,11 @@ router.post('/', async (req, res) => {
               ccRoles: validatedCcRoles,
               instruction,
               stepType: 'FORWARD',
-              recordsCopies: {
-                create: {
-                  status: 'PENDING_FILING'
-                }
-              }
             }
           }
         },
         include: {
-          steps: {
-            include: {
-              recordsCopies: true
-            }
-          }
+          steps: true
         }
       })
     })
@@ -130,7 +121,9 @@ router.post('/:id/step', async (req, res) => {
         }
       })
 
-      // 2. Create the step and the nested records copy
+      // 2. Create the step. No records copy here anymore — filing now only
+      // happens explicitly via POST /:id/send-to-file once the circulation
+      // is CLOSED (see that route), not as a side effect of every step.
       return await tx.circulationStep.create({
         data: {
           circulationId: id,
@@ -144,15 +137,7 @@ router.post('/:id/step', async (req, res) => {
           stepType,
           decision,
           amount: amount ? Number(amount) : null,
-          recordsCopies: {
-            create: {
-              status: 'PENDING_FILING'
-            }
-          }
         },
-        include: {
-          recordsCopies: true
-        }
       })
     })
 
@@ -242,7 +227,7 @@ router.post('/:id/sign', async (req, res) => {
           decision,
           amount: amount ? Number(amount) : null,
           signedAt,
-          recordsCopies: { create: { status: 'PENDING_FILING' } },
+          // No records copy here anymore — see POST /:id/step for why.
           signature: {
             create: {
               signerId: req.user.id,
@@ -256,7 +241,7 @@ router.post('/:id/sign', async (req, res) => {
             },
           },
         },
-        include: { recordsCopies: true, signature: true },
+        include: { signature: true },
       })
     })
 
@@ -316,9 +301,8 @@ router.put('/:id/release', authorize(['GM_PERSONAL_ASSISTANT']), async (req, res
           heldByRole: declaredRole,
           instruction: trimmedNote || 'Reviewed by PA, released to recipient.',
           stepType: 'PA_RELEASE',
-          recordsCopies: { create: { status: 'PENDING_FILING' } },
+          // No records copy here anymore — see POST /:id/step for why.
         },
-        include: { recordsCopies: true },
       })
     })
 
@@ -333,6 +317,62 @@ router.put('/:id/release', authorize(['GM_PERSONAL_ASSISTANT']), async (req, res
     return res.status(201).json({ success: true, step })
   } catch (error) {
     console.error('Error releasing circulation:', error)
+    return res.status(500).json({ success: false, message: 'Internal server error' })
+  }
+})
+
+// POST /api/circulation/:id/send-to-file — the ONLY way a CirculationRecordsCopy
+// gets created now (see POST /:id/step and POST /:id/sign above, which used
+// to auto-create one on every single step/signature — that's what produced
+// dozens of duplicate Filing Queue entries for documents that weren't even
+// closed yet). Explicit action, current holder only, CLOSED circulations
+// only — one real package per circulation, enforced by the unique
+// circulationId column, not by convention.
+router.post('/:id/send-to-file', async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const circulation = await prisma.documentCirculation.findUnique({
+      where: { id },
+      include: {
+        steps: { orderBy: { stepNumber: 'desc' }, take: 1 },
+        recordsCopy: true,
+      },
+    })
+    if (!circulation) {
+      return res.status(404).json({ success: false, message: 'Circulation not found' })
+    }
+    if (req.user.role !== circulation.currentHolderRole) {
+      return res.status(403).json({ success: false, message: 'You are not the current holder of this document' })
+    }
+    if (circulation.status !== 'CLOSED') {
+      return res.status(400).json({ success: false, message: 'Document must be closed before it can be sent to file' })
+    }
+    if (circulation.recordsCopy) {
+      return res.status(409).json({ success: false, message: 'This document has already been sent to file' })
+    }
+
+    const finalStepId = circulation.steps[0]?.id || null
+
+    const recordsCopy = await prisma.circulationRecordsCopy.create({
+      data: {
+        circulationId: id,
+        circulationStepId: finalStepId,
+        status: 'PENDING_FILING',
+      },
+    })
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'ENTRY_ATTACHED_TO_FILE',
+      module: 'Records',
+      description: `Sent "${circulation.title}" to file — added to the Filing Queue`,
+      ipAddress: req.ip,
+    })
+
+    return res.status(201).json({ success: true, recordsCopy })
+  } catch (error) {
+    console.error('Error sending circulation to file:', error)
     return res.status(500).json({ success: false, message: 'Internal server error' })
   }
 })
@@ -591,9 +631,12 @@ router.get('/:id', async (req, res) => {
           orderBy: { stepNumber: 'asc' },
           include: {
             fromUser: { select: { id: true, name: true, email: true } },
-            recordsCopies: true
           }
-        }
+        },
+        // Singular now — at most one package per circulation, created only
+        // via POST /:id/send-to-file. Lets the frontend show "Send to File"
+        // vs. "Already filed" without a separate lookup.
+        recordsCopy: true,
       }
     })
 
