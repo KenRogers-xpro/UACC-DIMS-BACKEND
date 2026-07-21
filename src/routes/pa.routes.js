@@ -155,14 +155,6 @@ router.put('/inbox/:id/forward', authenticate, authorize(['GM_PERSONAL_ASSISTANT
           stepType: 'FORWARD',
           decision,
           amount: amount ? Number(amount) : null,
-          recordsCopies: {
-            create: {
-              status: 'PENDING_FILING'
-            }
-          }
-        },
-        include: {
-          recordsCopies: true
         }
       })
     })

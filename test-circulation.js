@@ -33,18 +33,11 @@ async function main() {
             toRole: 'GM_PERSONAL_ASSISTANT',
             instruction: 'Please review and forward to GM for approval.',
             stepType: 'FORWARD',
-            recordsCopies: {
-              create: {
-                status: 'PENDING_FILING'
-              }
-            }
           }
         }
       },
       include: {
-        steps: {
-          include: { recordsCopies: true }
-        }
+        steps: true
       }
     })
     return circ
@@ -67,11 +60,7 @@ async function main() {
         toRole: 'GENERAL_MANAGER',
         instruction: 'Checked formatting. Ready for your review.',
         stepType: 'FORWARD',
-        recordsCopies: {
-          create: { status: 'PENDING_FILING' }
-        }
-      },
-      include: { recordsCopies: true }
+      }
     })
     return step
   })
@@ -93,11 +82,7 @@ async function main() {
         instruction: 'Approved. Proceed with implementation.',
         stepType: 'FINAL_DECISION',
         decision: 'APPROVED',
-        recordsCopies: {
-          create: { status: 'PENDING_FILING' }
-        }
-      },
-      include: { recordsCopies: true }
+      }
     })
     return step
   })
@@ -111,8 +96,7 @@ async function main() {
       steps: {
         orderBy: { stepNumber: 'asc' },
         include: {
-          fromUser: { select: { name: true } },
-          recordsCopies: true
+          fromUser: { select: { name: true } }
         }
       }
     }
