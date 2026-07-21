@@ -567,6 +567,20 @@ router.delete(
       })
       if (!document) return notFound(res, 'Document not found')
 
+      // A document that's ever been submitted has circulation history —
+      // steps, signatures, CC trails — that's part of the permanent record.
+      // Deleting the Document row out from under that history is what
+      // orphaned the three stuck circulations this route is being fixed
+      // alongside (see notifications.routes.js). Only a still-PRIVATE,
+      // never-submitted document has zero circulation rows and is safe to
+      // actually delete.
+      const circulationCount = await prisma.documentCirculation.count({
+        where: { sourceType: 'DOCUMENT', sourceId: String(document.id) },
+      })
+      if (circulationCount > 0) {
+        return error(res, "This document has circulation history and cannot be deleted — it's part of the permanent record", 409)
+      }
+
       await prisma.document.delete({ where: { id: parseInt(req.params.id) } })
       await removeDocumentEmbedding(document.id).catch(() => {})
 

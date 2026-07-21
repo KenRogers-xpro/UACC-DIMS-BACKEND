@@ -72,6 +72,7 @@ router.get('/', authenticate, async (req, res) => {
         take: RECENT_ITEMS_LIMIT,
       }),
       prisma.announcement.findMany({
+        where: { deletedAt: null },
         select: { id: true, title: true, createdAt: true, author: { select: { name: true } } },
         orderBy: { createdAt: 'desc' },
         take: RECENT_ITEMS_LIMIT * 2,
@@ -82,13 +83,36 @@ router.get('/', authenticate, async (req, res) => {
       }),
     ])
 
+    // Guard against circulations whose source Document no longer exists.
+    // documents.routes.js now blocks deleting a document with circulation
+    // history (see the 409 check there), so this shouldn't happen going
+    // forward — but it filters out any already-orphaned circulations (from
+    // before that guard existed) rather than surfacing a notification that
+    // can never resolve, batched into one query instead of checking each
+    // circulation's document individually.
+    const circsReferencingDocs = [...incomingCirc, ...outgoingCirc]
+      .filter((c) => c.sourceType === 'DOCUMENT' && c.sourceId)
+    const referencedDocIds = [...new Set(
+      circsReferencingDocs.map((c) => parseInt(c.sourceId, 10)).filter((id) => !Number.isNaN(id))
+    )]
+    const existingDocIds = new Set(
+      referencedDocIds.length
+        ? (await prisma.document.findMany({ where: { id: { in: referencedDocIds } }, select: { id: true } })).map((d) => d.id)
+        : []
+    )
+    const isOrphanedDocumentCirc = (c) =>
+      c.sourceType === 'DOCUMENT' && c.sourceId && !existingDocIds.has(parseInt(c.sourceId, 10))
+
+    const incomingCircLive = incomingCirc.filter((c) => !isOrphanedDocumentCirc(c))
+    const outgoingCircLive = outgoingCirc.filter((c) => !isOrphanedDocumentCirc(c))
+
     const readSet = new Set(readRows.map((r) => `${r.sourceType}:${r.sourceId}`))
     const isRead = (sourceType, sourceId) => readSet.has(`${sourceType}:${String(sourceId)}`)
 
     const incoming = []
     const outgoing = []
 
-    for (const c of incomingCirc) {
+    for (const c of incomingCircLive) {
       const latest = c.steps[0]
       if (!latest || isRead('CIRCULATION_STEP', latest.id)) continue
       incoming.push({
@@ -102,7 +126,7 @@ router.get('/', authenticate, async (req, res) => {
       })
     }
 
-    for (const c of outgoingCirc) {
+    for (const c of outgoingCircLive) {
       const latest = c.steps[0]
       if (!latest || isRead('CIRCULATION_STEP', latest.id)) continue
       outgoing.push({
