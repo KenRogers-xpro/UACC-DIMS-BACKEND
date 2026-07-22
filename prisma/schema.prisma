@@ -246,14 +246,16 @@ model Annotation {
 // via raw SQL migration (CREATE EXTENSION IF NOT EXISTS vector; then ALTER TABLE
 // ADD COLUMN embedding vector(768);). 768 dimensions matches gemini-embedding-001.
 model DocumentEmbedding {
-  id          String   @id @default(cuid())
-  sourceType  String   // "DOCUMENT", "REGISTRY_ENTRY", "CIRCULATION_STEP", "DRAFT_DOCUMENT"
-  sourceId    String   // polymorphic — stores the source record's ID as text regardless
+  id               String   @id @default(cuid())
+  sourceType       String   // "DOCUMENT", "REGISTRY_ENTRY", "CIRCULATION_STEP", "DRAFT_DOCUMENT"
+  sourceId         String   // polymorphic — stores the source record's ID as text regardless
                         // of whether the source table uses Int or String primary keys
-  chunkIndex  Int
-  chunkText   String   @db.Text
-  embedding   Unsupported("vector(768)")
-  createdAt   DateTime @default(now())
+  chunkIndex       Int
+  chunkText        String   @db.Text
+  embedding        Unsupported("vector(768)")
+  bodyExtracted    Boolean  @default(false)
+  extractionMethod String?
+  createdAt        DateTime @default(now())
 
   @@index([sourceType, sourceId])
 }

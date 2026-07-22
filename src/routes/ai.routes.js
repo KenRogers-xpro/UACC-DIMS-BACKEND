@@ -47,20 +47,29 @@ async function buildRagContext(messages, user) {
 
     if (visible.length === 0) return { context: '', topScore, embedding, queryText }
 
-    const entries = visible.map((doc) =>
-      `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})${doc.description ? `: ${doc.description}` : ''}`
-    ).join('\n')
+    const entries = visible.map((doc) => {
+      const header = `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})`
+      if (doc.bodyExtracted && doc.chunkText) {
+        return `${header} [Text Extracted]:\n${doc.chunkText}`
+      }
+      return `${header} [Metadata Only - File Body Not Extracted]${doc.description ? `: ${doc.description}` : ''}`
+    }).join('\n\n')
+
+    const hasMetadataOnlyDocs = visible.some((doc) => !doc.bodyExtracted)
 
     const context = [
       'The following documents from the DIMS system may be relevant to the user\'s question.',
       'Cite them by title and Document # when you use them. Do not mention documents not listed here.',
+      hasMetadataOnlyDocs
+        ? 'NOTE: The file contents for some listed documents were not extracted (metadata only). Do not invent, assume, or fabricate their file contents; state clearly that you can identify the document but have not read its full body text.'
+        : null,
       entries,
-    ].join('\n')
+    ].filter(Boolean).join('\n\n')
 
     return { context, topScore, embedding, queryText }
   } catch (err) {
     console.error('RAG retrieval failed, continuing without context:', err.message)
-    return { context: '', topScore: 1, embedding: null, queryText }
+    return { context: '', topScore: 0, embedding: null, queryText }
   }
 }
 

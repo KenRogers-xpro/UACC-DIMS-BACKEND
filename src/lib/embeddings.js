@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import { prisma } from './prisma.js'
 import { toVectorLiteral } from './vectorUtils.js'
 import { matchUnansweredQueriesForDocument } from './insights.js'
+import { extractDocumentText } from './textExtraction.js'
 
 const API_KEY = process.env.GEMINI_API_KEY || ''
 // text-embedding-004 has been retired by Google — gemini-embedding-001 is
@@ -33,18 +34,43 @@ export async function generateEmbedding(text) {
   return values
 }
 
-// Builds a lightweight text surrogate for the document. This embeds
-// metadata (title/description/category/department/uploader), NOT the
-// original file's actual text content — extracting real text from
-// arbitrary PDFs/DOCX/XLSX would need a parsing pipeline this project
-// doesn't have yet. Search quality is bounded by that.
-function buildChunkText(document) {
-  return [
+async function fetchDocumentBuffer(document) {
+  if (document.fileData && Buffer.isBuffer(document.fileData) && document.fileData.length > 0) {
+    return document.fileData
+  }
+
+  const filePath = document.filePath || ''
+  if (/^https?:\/\//i.test(filePath)) {
+    try {
+      const res = await fetch(filePath)
+      if (!res.ok) {
+        console.error('Failed to fetch document file from URL:', filePath, res.statusText)
+        return null
+      }
+      const arrayBuffer = await res.arrayBuffer()
+      return Buffer.from(arrayBuffer)
+    } catch (err) {
+      console.error('Error fetching document file buffer:', filePath, err && err.message)
+      return null
+    }
+  }
+
+  return null
+}
+
+function buildChunkText(document, bodyText = '') {
+  const parts = [
     `Title: ${document.title}`,
     document.description ? `Description: ${document.description}` : null,
     `Category: ${document.category}`,
     `Department: ${String(document.department).replace(/_/g, ' ')}`,
-  ].filter(Boolean).join('\n')
+  ].filter(Boolean)
+
+  if (bodyText && bodyText.trim()) {
+    parts.push(`Body:\n${bodyText.trim()}`)
+  }
+
+  return parts.join('\n')
 }
 
 export async function ingestDocument(document) {
@@ -54,7 +80,16 @@ export async function ingestDocument(document) {
     return
   }
 
-  const chunkText = buildChunkText(document)
+  const buffer = await fetchDocumentBuffer(document)
+  const extraction = buffer
+    ? await extractDocumentText({
+        buffer,
+        mimeType: document.mimeType,
+        filename: document.filePath || document.title,
+      })
+    : { text: null, extractionMethod: 'unsupported' }
+
+  const chunkText = buildChunkText(document, extraction.text)
   const embedding = await generateEmbedding(chunkText)
   const vectorLiteral = toVectorLiteral(embedding)
   const sourceId = String(document.id)
@@ -62,10 +97,12 @@ export async function ingestDocument(document) {
   await prisma.$executeRaw`DELETE FROM "DocumentEmbedding" WHERE "sourceType" = 'DOCUMENT' AND "sourceId" = ${sourceId}`
 
   const id = crypto.randomUUID()
+  const bodyExtracted = Boolean(extraction.text && extraction.text.trim())
+
   await prisma.$executeRawUnsafe(
-    `INSERT INTO "DocumentEmbedding" (id, "sourceType", "sourceId", "chunkIndex", "chunkText", embedding, "createdAt")
-     VALUES ($1, 'DOCUMENT', $2, 0, $3, $4::vector, now())`,
-    id, sourceId, chunkText, vectorLiteral
+    `INSERT INTO "DocumentEmbedding" (id, "sourceType", "sourceId", "chunkIndex", "chunkText", embedding, "bodyExtracted", "extractionMethod", "createdAt")
+     VALUES ($1, 'DOCUMENT', $2, 0, $3, $4::vector, $5, $6, now())`,
+    id, sourceId, chunkText, vectorLiteral, bodyExtracted, extraction.extractionMethod || 'unsupported'
   )
 
   // Detached on purpose — matching against every unresolved question is a
@@ -84,6 +121,7 @@ export async function removeDocumentEmbedding(documentId) {
 async function searchByVectorLiteral(vectorLiteral, limit) {
   return prisma.$queryRawUnsafe(
     `SELECT d.id, d.title, d.description, d.category, d.department, d.status, d."uploadedBy",
+            e."bodyExtracted", e."extractionMethod", e."chunkText",
             1 - (e.embedding <=> $1::vector) AS score
      FROM "DocumentEmbedding" e
      JOIN documents d ON d.id = (e."sourceId")::int
@@ -94,7 +132,7 @@ async function searchByVectorLiteral(vectorLiteral, limit) {
   )
 }
 
-// Returns { id, title, description, category, department, status, uploadedBy, score }[]
+// Returns { id, title, description, category, department, status, uploadedBy, bodyExtracted, extractionMethod, chunkText, score }[]
 // ordered by relevance. Does NOT apply access control — callers must filter
 // the result against the requesting user's visible-document set themselves
 // (see documents.routes.js's semantic search endpoint and ai.routes.js).
