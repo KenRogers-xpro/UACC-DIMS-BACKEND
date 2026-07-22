@@ -4,7 +4,7 @@ import { success, error, serverError } from '../lib/response.js'
 import { generateFromMessages, hasKey, getKeyDiagnostics, checkKeyWithTestCall } from '../lib/ai.js'
 import { prisma } from '../lib/prisma.js'
 import { semanticSearchWithEmbedding } from '../lib/embeddings.js'
-import { captureUnansweredQuery } from '../lib/insights.js'
+import { captureUnansweredQuery, UNANSWERED_QUERY_THRESHOLD } from '../lib/insights.js'
 
 const router = Router()
 
@@ -99,12 +99,23 @@ router.post('/', authenticate, async (req, res) => {
 
     const { context: ragContext, topScore, embedding, queryText, isUnanswerable } = await buildRagContext(messages, req.user)
 
+    // Two different questions reuse the same retrieval result but must NOT
+    // share one flag: isUnanswerable ("should the model be told to give up")
+    // is correctly true only when retrieval failed or nothing was visible at
+    // all — a weak-but-visible match should still let the model try. But
+    // "should this question be tracked so a future document upload can
+    // resolve it" is a different question with a different answer: a
+    // visible-but-weak match is exactly the case the insight system exists
+    // for, so capture must key off the raw topScore threshold, not off
+    // whether anything happened to be visible this time.
+    const shouldCaptureUnanswered = isUnanswerable || topScore < UNANSWERED_QUERY_THRESHOLD
+
     // Store the question (reusing the embedding already computed above —
     // never re-embed) so a future document ingestion can check against it.
     // Awaited, not fire-and-forget: the system prompt below needs to know
     // right now whether to give the "I'll flag you later" line, and this is
     // one small insert, not the expensive part of the request.
-    if (isUnanswerable && embedding && queryText) {
+    if (shouldCaptureUnanswered && embedding && queryText) {
       try {
         await captureUnansweredQuery({ userId: req.user.id, queryText, embedding, topScore })
       } catch (err) {
