@@ -508,11 +508,10 @@ router.post('/:id/submit', authenticate, async (req, res) => {
               ccRoles: validatedCcRoles,
               instruction: instruction || `Submitted "${document.title}" for review.`,
               stepType: 'FORWARD',
-              recordsCopies: { create: { status: 'PENDING_FILING' } },
             },
           },
         },
-        include: { steps: { include: { recordsCopies: true } } },
+        include: { steps: true },
       })
 
       // DocumentCategory and DocType share identical string values for
