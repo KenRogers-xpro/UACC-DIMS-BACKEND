@@ -4,7 +4,7 @@ import { success, error, serverError } from '../lib/response.js'
 import { generateFromMessages, hasKey, getKeyDiagnostics, checkKeyWithTestCall } from '../lib/ai.js'
 import { prisma } from '../lib/prisma.js'
 import { semanticSearchWithEmbedding } from '../lib/embeddings.js'
-import { captureUnansweredQuery, UNANSWERED_QUERY_THRESHOLD } from '../lib/insights.js'
+import { captureUnansweredQuery } from '../lib/insights.js'
 
 const router = Router()
 
@@ -21,7 +21,7 @@ const router = Router()
 // matchUnansweredQueriesForDocument's own visibility check at match time).
 async function buildRagContext(messages, user) {
   const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-  if (!lastUserMessage?.text?.trim()) return { context: '', topScore: 1, embedding: null, queryText: '' }
+  if (!lastUserMessage?.text?.trim()) return { context: '', topScore: 1, embedding: null, queryText: '', isUnanswerable: false }
 
   const queryText = lastUserMessage.text.trim()
 
@@ -45,7 +45,12 @@ async function buildRagContext(messages, user) {
       .filter((doc) => hasBroadAccess || doc.uploadedBy === user.id || touchedDocumentIds.has(doc.id))
       .slice(0, 5)
 
-    if (visible.length === 0) return { context: '', topScore, embedding, queryText }
+    // "Unanswerable" means retrieval genuinely came up empty (no visible
+    // matches at all), not merely weak — a low-but-nonzero topScore still
+    // hands the model real documents and lets it judge relevance itself,
+    // rather than being told up front to give up on a match it might
+    // actually be able to use.
+    if (visible.length === 0) return { context: '', topScore, embedding, queryText, isUnanswerable: true }
 
     const entries = visible.map((doc) => {
       const header = `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})`
@@ -66,10 +71,13 @@ async function buildRagContext(messages, user) {
       entries,
     ].filter(Boolean).join('\n\n')
 
-    return { context, topScore, embedding, queryText }
+    return { context, topScore, embedding, queryText, isUnanswerable: false }
   } catch (err) {
     console.error('RAG retrieval failed, continuing without context:', err.message)
-    return { context: '', topScore: 0, embedding: null, queryText }
+    // Retrieval itself throwing is the one case that still forces the
+    // "couldn't find anything" branch — there's genuinely no context to
+    // reason from here, unlike a merely low-scoring result above.
+    return { context: '', topScore: 0, embedding: null, queryText, isUnanswerable: true }
   }
 }
 
@@ -89,8 +97,7 @@ router.post('/', authenticate, async (req, res) => {
       return error(res, 'Gemini API key is not set', { diagnostics: getKeyDiagnostics() })
     }
 
-    const { context: ragContext, topScore, embedding, queryText } = await buildRagContext(messages, req.user)
-    const isUnanswerable = topScore < UNANSWERED_QUERY_THRESHOLD
+    const { context: ragContext, topScore, embedding, queryText, isUnanswerable } = await buildRagContext(messages, req.user)
 
     // Store the question (reusing the embedding already computed above —
     // never re-embed) so a future document ingestion can check against it.
@@ -106,9 +113,10 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     const systemPrompt = `You are an AI assistant in the UACC Document & Information Management System (DIMS).
-When a user asks you to "draft a memo", "write a letter", "compose a report", or similar, you MUST use the draftDocument tool to create the draft.
-Generate well-structured document content (clear subject line, To/From/Date/Ref/Subject structure where appropriate) and call the tool.
-IMPORTANT: After calling the tool, your response MUST state clearly that this is a draft requiring human review before submission — never imply the document is finalized. Tell the user to go to their My Drafts to review it.${isUnanswerable ? `
+
+You have access to a draftDocument tool. Use it only when the user has clearly and explicitly asked you to create, write, or draft a document that they intend to save — for example "draft a memo about X" or "write me a formal letter to Y". Do not call it in response to general help, questions, summaries, or discussions where the user hasn't asked for a saved document.
+
+When you do call the tool, state clearly in your reply that the result is a draft requiring human review before submission, and point the user to My Drafts. Never imply the document is finalized.${isUnanswerable ? `
 IMPORTANT: You could not find a good answer to the user's question in the available documents. Honestly tell them you couldn't find a strong match right now, and mention that you'll notify them if a relevant document is added later. Do not fabricate an answer or cite documents that weren't provided to you.` : ''}`
 
     const augmentedMessages = [
