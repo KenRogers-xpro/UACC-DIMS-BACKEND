@@ -286,6 +286,54 @@ router.get('/files', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANA
   }
 })
 
+// GET /api/records/files/:id — a dossier's full contents. Two genuinely
+// separate models get filed into a RecordsFile via two different foreign
+// keys: RegistryEntry.recordsFileId (the old path — physical incoming mail,
+// PUT /:entryId/attach-to-file) and CirculationRecordsCopy.recordsFileId
+// (the new explicit "Send to File" path — POST /circulation/:id/send-to-file,
+// PUT /circulation-copies/:id/file). The dossier detail modal used to be
+// built only against the first one (a client-side filter over RegistryEntry
+// records), which is why a circulation package filed into REG-FILE-001
+// never showed up there — this endpoint queries both and returns them
+// together so the modal doesn't have to know which path something came
+// through. circulationPackages reuses fetchCirculationPackages() so this
+// modal and the Filing Queue render identical package shapes.
+router.get('/files/:id', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER', 'IT_ADMINISTRATOR']), async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const file = await prisma.recordsFile.findUnique({
+      where: { id },
+      include: { createdBy: { select: { id: true, name: true } } },
+    })
+    if (!file) return notFound(res, 'Records file not found')
+
+    const [registryEntries, circulationPackages] = await Promise.all([
+      prisma.registryEntry.findMany({
+        where: { recordsFileId: id },
+        include: {
+          handledBy: { select: { id: true, name: true, role: true } },
+          annotations: {
+            include: { author: { select: { id: true, name: true, role: true } } },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      fetchCirculationPackages({ recordsFileId: id, status: 'FILED' }),
+    ])
+
+    return success(res, {
+      file,
+      registryEntries,
+      circulationPackages,
+      totalEntries: registryEntries.length + circulationPackages.length,
+    })
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
 // POST /api/records/files — standalone file creation, independent of
 // registering any document — the "create a file while waiting for
 // documents" capability. Starts with zero entries.
@@ -360,67 +408,75 @@ router.put('/:entryId/attach-to-file', authenticate, authorize(['RECORDS_EXECUTI
   }
 })
 
-// GET /api/records/circulation-copies — one row per CLOSED-and-sent-to-file
-// circulation (see circulation.routes.js POST /:id/send-to-file). Each row
-// now carries the FULL package: the real originating Document (resolved
-// below) and the complete ordered step/signature trail — not just the
-// closing step's single instruction string, so the Filing Queue can render
-// what's actually being filed instead of a bare quoted line.
-router.get('/circulation-copies', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
-  try {
-    const { status = 'PENDING_FILING' } = req.query
-    const copies = await prisma.circulationRecordsCopy.findMany({
-      where: { status },
-      include: {
-        circulation: {
-          include: {
-            steps: {
-              orderBy: { stepNumber: 'asc' },
-              include: {
-                signature: true,
-                fromUser: { select: { id: true, name: true, role: true } },
-              },
+// Shared by GET /circulation-copies (the Filing Queue) and GET /files/:id
+// (a dossier's contents) — both need the exact same package shape (real
+// source Document + full step/signature trail) so the two surfaces render
+// identically instead of teaching users two different mental models for
+// "what a filed package looks like".
+async function fetchCirculationPackages(where) {
+  const copies = await prisma.circulationRecordsCopy.findMany({
+    where,
+    include: {
+      circulation: {
+        include: {
+          steps: {
+            orderBy: { stepNumber: 'asc' },
+            include: {
+              signature: true,
+              fromUser: { select: { id: true, name: true, role: true } },
             },
-            originator: { select: { id: true, name: true, role: true } },
-            attachments: {
-              include: {
-                document: { select: { id: true, title: true, mimeType: true, fileSize: true } },
-                attachedBy: { select: { id: true, name: true } },
-              },
+          },
+          originator: { select: { id: true, name: true, role: true } },
+          attachments: {
+            include: {
+              document: { select: { id: true, title: true, mimeType: true, fileSize: true } },
+              attachedBy: { select: { id: true, name: true } },
             },
           },
         },
-        step: true, // the closing step, kept only for reference — see schema.prisma
-        recordsFile: true,
-        filedBy: { select: { id: true, name: true, role: true } },
       },
-      orderBy: { createdAt: 'desc' }
-    })
+      step: true, // the closing step, kept only for reference — see schema.prisma
+      recordsFile: true,
+      filedBy: { select: { id: true, name: true, role: true } },
+    },
+    orderBy: { createdAt: 'desc' }
+  })
 
-    // Resolve the real source Document for each package, same batched
-    // pattern as the notifications fix (notifications.routes.js) — one
-    // query for every referenced document instead of N+1.
-    const documentIds = [...new Set(
-      copies
-        .filter((c) => c.circulation?.sourceType === 'DOCUMENT' && c.circulation.sourceId)
-        .map((c) => parseInt(c.circulation.sourceId, 10))
-        .filter((id) => !Number.isNaN(id))
-    )]
-    const sourceDocuments = documentIds.length
-      ? await prisma.document.findMany({
-          where: { id: { in: documentIds } },
-          select: { id: true, title: true, category: true, department: true, filePath: true, mimeType: true, fileSize: true, createdAt: true },
-        })
-      : []
-    const documentsById = new Map(sourceDocuments.map((d) => [d.id, d]))
+  // Resolve the real source Document for each package, same batched pattern
+  // as the notifications fix (notifications.routes.js) — one query for
+  // every referenced document instead of N+1.
+  const documentIds = [...new Set(
+    copies
+      .filter((c) => c.circulation?.sourceType === 'DOCUMENT' && c.circulation.sourceId)
+      .map((c) => parseInt(c.circulation.sourceId, 10))
+      .filter((id) => !Number.isNaN(id))
+  )]
+  const sourceDocuments = documentIds.length
+    ? await prisma.document.findMany({
+        where: { id: { in: documentIds } },
+        select: { id: true, title: true, category: true, department: true, filePath: true, mimeType: true, fileSize: true, createdAt: true },
+      })
+    : []
+  const documentsById = new Map(sourceDocuments.map((d) => [d.id, d]))
 
-    const copiesWithDocument = copies.map((c) => ({
-      ...c,
-      document: c.circulation?.sourceType === 'DOCUMENT'
-        ? documentsById.get(parseInt(c.circulation.sourceId, 10)) || null
-        : null,
-    }))
+  return copies.map((c) => ({
+    ...c,
+    document: c.circulation?.sourceType === 'DOCUMENT'
+      ? documentsById.get(parseInt(c.circulation.sourceId, 10)) || null
+      : null,
+  }))
+}
 
+// GET /api/records/circulation-copies — one row per CLOSED-and-sent-to-file
+// circulation (see circulation.routes.js POST /:id/send-to-file). Each row
+// carries the FULL package: the real originating Document and the complete
+// ordered step/signature trail — not just the closing step's single
+// instruction string, so the Filing Queue can render what's actually being
+// filed instead of a bare quoted line.
+router.get('/circulation-copies', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
+  try {
+    const { status = 'PENDING_FILING' } = req.query
+    const copiesWithDocument = await fetchCirculationPackages({ status })
     return success(res, copiesWithDocument)
   } catch (err) {
     return serverError(res, err)
