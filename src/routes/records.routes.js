@@ -6,6 +6,8 @@ import { success, error, notFound, serverError } from '../lib/response.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { generateRegistryNo } from '../lib/registry.js'
 import { validateCcRoles } from '../lib/roles.js'
+import { uploadFile } from '../lib/cloudinary.js'
+import { ingestDocument } from '../lib/embeddings.js'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10485760 } })
@@ -241,6 +243,95 @@ router.post('/', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'
     })
 
     return success(res, withAnnotations, 'Registry entry created successfully', 201)
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// Same shape as documents.routes.js's own DOCUMENT_SELECT (not exported
+// from there, and this route lives here rather than in documents.routes.js
+// since it's a Records Executive tool, not part of the normal upload flow).
+const BULK_INGEST_DOCUMENT_SELECT = {
+  id: true, title: true, category: true, department: true, filePath: true,
+  fileSize: true, mimeType: true, description: true, status: true, origin: true,
+  isEditable: true, uploadedBy: true, createdAt: true, updatedAt: true,
+}
+
+// POST /api/records/bulk-ingest — Records Executive digitizing a physical
+// backlog. One file per request (the frontend iterates for a multi-file
+// batch — simpler than multipart-array handling, and it lets per-file
+// progress render individually). Lands as status: 'ARCHIVED', origin:
+// 'BULK_INGESTED' — reference material, not a live circulation, so it's
+// excluded from action queues (buildStateFilter in documents.routes.js)
+// but picked up by the same RAG ingestion pipeline as anything else
+// non-PRIVATE, same as a normal submit.
+//
+// confidentiality is accepted and recorded (folded into the description,
+// alongside originalDate/sourceNote) but deliberately NOT access-enforced —
+// Document has no confidentiality column, and adding tiered enforcement was
+// explicitly scoped out for this pass in favor of the simpler department-
+// match rule added to canViewDocument/documents-list/semantic-search/RAG
+// below. Recording what the RE selected rather than silently dropping it
+// keeps that intent visible to anyone reviewing the document later, even
+// though it isn't a security control yet.
+router.post('/bulk-ingest', authenticate, authorize(['RECORDS_EXECUTIVE']), upload.single('file'), async (req, res) => {
+  try {
+    const { title, category, department, confidentiality, originalDate, sourceNote } = req.body
+    const file = req.file
+
+    if (!title || !category || !department || !file) {
+      return error(res, 'Title, category, department and file are required')
+    }
+
+    let uploaded
+    try {
+      uploaded = await uploadFile(file.buffer, file.originalname, file.mimetype)
+    } catch (uploadErr) {
+      console.error('Cloudinary upload failed:', uploadErr)
+      return serverError(res, uploadErr)
+    }
+
+    const confidentialityLabel = (confidentiality ? String(confidentiality).trim() : 'INTERNAL').toUpperCase()
+    const provenanceLines = []
+    if (originalDate) provenanceLines.push(`Original date: ${originalDate}.`)
+    if (sourceNote && String(sourceNote).trim()) provenanceLines.push(`Source: ${String(sourceNote).trim()}.`)
+    provenanceLines.push(`Confidentiality (informational only — not access-enforced): ${confidentialityLabel}.`)
+
+    const document = await prisma.document.create({
+      data: {
+        title:       String(title).trim(),
+        category,
+        department,
+        description: provenanceLines.join(' '),
+        filePath:    uploaded.secure_url,
+        publicId:    uploaded.public_id,
+        mimeType:    file.mimetype,
+        fileSize:    file.size,
+        uploadedBy:  req.user.id,
+        status:      'ARCHIVED',
+        origin:      'BULK_INGESTED',
+        isEditable:  false,
+      },
+      select: BULK_INGEST_DOCUMENT_SELECT,
+    })
+
+    // Fire-and-forget, same pattern as the regular submit flow (see
+    // documents.routes.js POST /:id/submit) — the RAG pipeline picks this
+    // up automatically since status !== 'PRIVATE'. Never blocks the
+    // response on embedding generation.
+    ingestDocument(document).catch((err) => {
+      console.error('ingestDocument failed for bulk-ingested document', document.id, err)
+    })
+
+    await logAudit({
+      userId:      req.user.id,
+      action:      'DOCUMENT_UPLOAD',
+      module:      'Documents',
+      description: `Bulk ingested "${title}" into the archive (${String(department).replace(/_/g, ' ')})`,
+      ipAddress:   req.ip,
+    })
+
+    return success(res, document, 'Document archived successfully', 201)
   } catch (err) {
     return serverError(res, err)
   }

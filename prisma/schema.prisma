@@ -68,9 +68,12 @@ model Document {
   publicId    String?          // Cloudinary public_id, needed for delete/signed-url/info lookups — null for legacy fileData-backed rows and drafts
   mimeType    String?
   description String?
-  status      String           @default("PRIVATE") // PRIVATE, SUBMITTED, IN_CIRCULATION, FINALIZED
+  status      String           @default("PRIVATE") // PRIVATE, SUBMITTED, IN_CIRCULATION, FINALIZED, ARCHIVED
   isEditable  Boolean          @default(true)       // false once submitted/circulated —
                                                      // ties into the immutability rule from circulation
+  origin      String           @default("UPLOADED") // UPLOADED, BULK_INGESTED — same documented-string
+                                                      // pattern as DraftDocument.origin, not a Prisma enum
+                                                      // so future values stay cheap to add.
   uploadedBy  Int
   uploader    User             @relation(fields: [uploadedBy], references: [id])
   createdAt   DateTime         @default(now())

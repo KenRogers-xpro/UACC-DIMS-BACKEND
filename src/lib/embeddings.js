@@ -120,7 +120,7 @@ export async function removeDocumentEmbedding(documentId) {
 
 async function searchByVectorLiteral(vectorLiteral, limit) {
   return prisma.$queryRawUnsafe(
-    `SELECT d.id, d.title, d.description, d.category, d.department, d.status, d."uploadedBy",
+    `SELECT d.id, d.title, d.description, d.category, d.department, d.status, d.origin, d."uploadedBy",
             e."bodyExtracted", e."extractionMethod", e."chunkText",
             1 - (e.embedding <=> $1::vector) AS score
      FROM "DocumentEmbedding" e
@@ -132,7 +132,7 @@ async function searchByVectorLiteral(vectorLiteral, limit) {
   )
 }
 
-// Returns { id, title, description, category, department, status, uploadedBy, bodyExtracted, extractionMethod, chunkText, score }[]
+// Returns { id, title, description, category, department, status, origin, uploadedBy, bodyExtracted, extractionMethod, chunkText, score }[]
 // ordered by relevance. Does NOT apply access control — callers must filter
 // the result against the requesting user's visible-document set themselves
 // (see documents.routes.js's semantic search endpoint and ai.routes.js).

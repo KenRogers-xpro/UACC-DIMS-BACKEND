@@ -31,7 +31,7 @@ async function createPendingRouting({ sourceType, sourceId, addressedTo = 'GENER
 // GET /:id/file selects it, to actually stream the bytes.
 const DOCUMENT_SELECT = {
   id: true, title: true, category: true, department: true, filePath: true,
-  fileSize: true, mimeType: true, description: true, status: true,
+  fileSize: true, mimeType: true, description: true, status: true, origin: true,
   isEditable: true, uploadedBy: true, createdAt: true, updatedAt: true,
   uploader: { select: { id: true, name: true, role: true } },
 }
@@ -44,7 +44,15 @@ const DOCUMENT_SELECT = {
 // sourceId is a polymorphic string column, not a Prisma relation, so this
 // resolves matching document IDs first and filters on those.
 async function buildStateFilter(state, user) {
-  if (!state) return {}
+  // ARCHIVED (bulk-ingested reference material) never has a circulation, so
+  // it would never match NEW/PENDING/IN_CIRCULATION/STORED's id-in-list
+  // filters anyway — but the no-filter default view returns everything
+  // visible with no state constraint at all, which would let archives
+  // clutter it. Excluded there explicitly; only the dedicated ARCHIVED
+  // state (below) surfaces them.
+  if (!state) return { status: { not: 'ARCHIVED' } }
+
+  if (state === 'ARCHIVED') return { status: 'ARCHIVED' }
 
   if (state === 'NEW' || state === 'PENDING') {
     const myCirculations = await prisma.documentCirculation.findMany({
@@ -86,7 +94,9 @@ async function buildStateFilter(state, user) {
     return { id: { in: closed.map((c) => parseInt(c.sourceId, 10)).filter(Number.isInteger) } }
   }
 
-  return {}
+  // Unrecognized state string — same as no state, not an invitation to
+  // surface archives.
+  return { status: { not: 'ARCHIVED' } }
 }
 
 // GET /api/documents
@@ -103,6 +113,12 @@ router.get('/', authenticate, async (req, res) => {
     //    A document that's still PRIVATE has no circulation yet, so it's
     //    only reachable via the "own uploads" branch — consistent with
     //    staging.
+    //  - ARCHIVED (bulk-ingested) documents never have a circulation to
+    //    touch, so they get their own branch: visible department-wide, not
+    //    confidentiality-tiered (see records.routes.js POST /bulk-ingest).
+    //    buildStateFilter is what actually keeps these out of the default/
+    //    action-queue views — this OR only controls whether the user can
+    //    see them AT ALL, for when state=ARCHIVED is explicitly requested.
     const hasBroadAccess = ['RECORDS_EXECUTIVE', 'GENERAL_MANAGER'].includes(req.user.role)
     let visibility = {}
     if (!hasBroadAccess) {
@@ -124,7 +140,11 @@ router.get('/', authenticate, async (req, res) => {
         .filter((n) => Number.isInteger(n))
       const ccdDocumentIds = ccdAnnotations.map((a) => a.documentId)
 
-      visibility = { OR: [{ uploadedBy: req.user.id }, { id: { in: [...touchedDocumentIds, ...ccdDocumentIds] } }] }
+      visibility = { OR: [
+        { uploadedBy: req.user.id },
+        { id: { in: [...touchedDocumentIds, ...ccdDocumentIds] } },
+        { status: 'ARCHIVED', department: req.user.department },
+      ] }
     }
 
     const stateFilter = await buildStateFilter(state.toUpperCase(), req.user)
@@ -187,7 +207,8 @@ router.get('/search/semantic', authenticate, async (req, res) => {
 
     const candidates = await semanticSearchDocuments(q, Math.min(parseInt(limit, 10) || 10, 25) * 3)
     const visible = candidates.filter((doc) =>
-      hasBroadAccess || doc.uploadedBy === req.user.id || touchedDocumentIds.has(doc.id)
+      hasBroadAccess || doc.uploadedBy === req.user.id || touchedDocumentIds.has(doc.id) ||
+      (doc.status === 'ARCHIVED' && doc.department === req.user.department)
     ).slice(0, parseInt(limit, 10) || 10)
 
     return success(res, visible)

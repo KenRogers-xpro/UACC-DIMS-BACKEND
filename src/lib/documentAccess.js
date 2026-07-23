@@ -11,6 +11,13 @@ export async function canViewDocument(document, user) {
   if (hasBroadAccess || document.uploadedBy === user.id) return true
   if (document.status === 'PRIVATE') return false
 
+  // Archived (bulk-ingested reference material — see records.routes.js
+  // POST /bulk-ingest) never has a circulation, so the "touched it" rule
+  // below can't ever apply to it. Gated on department match instead, same
+  // department field every other document already carries — not
+  // confidentiality-tiered yet, that was deliberately deferred.
+  if (document.status === 'ARCHIVED') return document.department === user.department
+
   const touchedIt = await prisma.documentCirculation.findFirst({
     where: {
       sourceType: 'DOCUMENT',

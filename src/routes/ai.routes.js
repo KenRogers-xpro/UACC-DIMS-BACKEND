@@ -41,8 +41,15 @@ async function buildRagContext(messages, user) {
 
     const { embedding, results: candidates } = await semanticSearchWithEmbedding(queryText, 15)
     const topScore = candidates[0]?.score ?? 0
+    // ARCHIVED (bulk-ingested) documents never have a circulation to
+    // "touch", so they get their own department-match branch — same rule
+    // as documents.routes.js's list/semantic-search endpoints and
+    // canViewDocument. Not confidentiality-tiered (see records.routes.js
+    // POST /bulk-ingest) — this was verified against the actual gating
+    // logic, not assumed to already work.
     const visible = candidates
-      .filter((doc) => hasBroadAccess || doc.uploadedBy === user.id || touchedDocumentIds.has(doc.id))
+      .filter((doc) => hasBroadAccess || doc.uploadedBy === user.id || touchedDocumentIds.has(doc.id) ||
+        (doc.status === 'ARCHIVED' && doc.department === user.department))
       .slice(0, 5)
 
     // "Unanswerable" means retrieval genuinely came up empty (no visible
@@ -54,10 +61,19 @@ async function buildRagContext(messages, user) {
 
     const entries = visible.map((doc) => {
       const header = `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})`
-      if (doc.bodyExtracted && doc.chunkText) {
-        return `${header} [Text Extracted]:\n${doc.chunkText}`
-      }
-      return `${header} [Metadata Only - File Body Not Extracted]${doc.description ? `: ${doc.description}` : ''}`
+      const body = doc.bodyExtracted && doc.chunkText
+        ? `${header} [Text Extracted]:\n${doc.chunkText}`
+        : `${header} [Metadata Only - File Body Not Extracted]${doc.description ? `: ${doc.description}` : ''}`
+
+      // Primes the model to attribute this correctly ("according to an
+      // archived memo from...") instead of treating archival content as
+      // current-state — not cosmetic, this is what stops a bulk-ingested
+      // 2019 memo from being cited as if it reflects today.
+      const provenance = doc.origin === 'BULK_INGESTED'
+        ? '\n[Archival note: bulk-ingested from a physical/archival source, not part of a live circulation. Any known original date or source is folded into the description above — cite this as archived material, not current-state information.]'
+        : ''
+
+      return body + provenance
     }).join('\n\n')
 
     const hasMetadataOnlyDocs = visible.some((doc) => !doc.bodyExtracted)
