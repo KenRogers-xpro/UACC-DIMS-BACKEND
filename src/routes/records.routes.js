@@ -377,18 +377,20 @@ router.get('/files', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANA
   }
 })
 
-// GET /api/records/files/:id — a dossier's full contents. Two genuinely
-// separate models get filed into a RecordsFile via two different foreign
-// keys: RegistryEntry.recordsFileId (the old path — physical incoming mail,
-// PUT /:entryId/attach-to-file) and CirculationRecordsCopy.recordsFileId
-// (the new explicit "Send to File" path — POST /circulation/:id/send-to-file,
-// PUT /circulation-copies/:id/file). The dossier detail modal used to be
-// built only against the first one (a client-side filter over RegistryEntry
-// records), which is why a circulation package filed into REG-FILE-001
-// never showed up there — this endpoint queries both and returns them
-// together so the modal doesn't have to know which path something came
-// through. circulationPackages reuses fetchCirculationPackages() so this
-// modal and the Filing Queue render identical package shapes.
+// GET /api/records/files/:id — a dossier's full contents. THREE genuinely
+// separate models get filed into a RecordsFile via three different foreign
+// keys: RegistryEntry.recordsFileId (physical incoming mail,
+// PUT /:entryId/attach-to-file), CirculationRecordsCopy.recordsFileId
+// (closed-circulation packages — POST /circulation/:id/send-to-file,
+// PUT /circulation-copies/:id/file), and Document.recordsFileId
+// (bulk-ingested archives — PUT /documents/:docId/attach-to-file). The
+// dossier detail modal used to be built only against the first one (a
+// client-side filter over RegistryEntry records), which is why filed
+// items kept turning up invisible here — this endpoint queries all three
+// and returns them together so the modal doesn't have to know which path
+// something came through. circulationPackages reuses
+// fetchCirculationPackages() so this modal and the Filing Queue render
+// identical package shapes.
 router.get('/files/:id', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_MANAGER', 'IT_ADMINISTRATOR']), async (req, res) => {
   try {
     const { id } = req.params
@@ -399,7 +401,7 @@ router.get('/files/:id', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_
     })
     if (!file) return notFound(res, 'Records file not found')
 
-    const [registryEntries, circulationPackages] = await Promise.all([
+    const [registryEntries, circulationPackages, archivedDocuments] = await Promise.all([
       prisma.registryEntry.findMany({
         where: { recordsFileId: id },
         include: {
@@ -412,13 +414,22 @@ router.get('/files/:id', authenticate, authorize(['RECORDS_EXECUTIVE', 'GENERAL_
         orderBy: { createdAt: 'desc' },
       }),
       fetchCirculationPackages({ recordsFileId: id, status: 'FILED' }),
+      prisma.document.findMany({
+        where: { recordsFileId: id, status: 'ARCHIVED' },
+        select: {
+          id: true, title: true, category: true, department: true, description: true, createdAt: true,
+          uploader: { select: { id: true, name: true, role: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
     ])
 
     return success(res, {
       file,
       registryEntries,
       circulationPackages,
-      totalEntries: registryEntries.length + circulationPackages.length,
+      archivedDocuments,
+      totalEntries: registryEntries.length + circulationPackages.length + archivedDocuments.length,
     })
   } catch (err) {
     return serverError(res, err)
@@ -494,6 +505,57 @@ router.put('/:entryId/attach-to-file', authenticate, authorize(['RECORDS_EXECUTI
     })
 
     return success(res, updated, 'Entry attached to file')
+  } catch (err) {
+    return serverError(res, err)
+  }
+})
+
+// PUT /api/records/documents/:docId/attach-to-file — file a bulk-ingested
+// archived Document into a RecordsFile dossier, the archive-side sibling of
+// the RegistryEntry attach-to-file route above. RECORDS_EXECUTIVE only
+// (tighter than the RegistryEntry route, which also allows GM/IT_ADMIN) —
+// this is specifically an RE archival workflow.
+router.put('/documents/:docId/attach-to-file', authenticate, authorize(['RECORDS_EXECUTIVE']), async (req, res) => {
+  try {
+    const docId = parseInt(req.params.docId, 10)
+    const { recordsFileId } = req.body
+    if (!recordsFileId) return error(res, 'recordsFileId is required')
+
+    const document = await prisma.document.findUnique({ where: { id: docId } })
+    if (!document) return notFound(res, 'Document not found')
+
+    // Guards against an RE accidentally filing a live-circulating document
+    // through the archive path — only bulk-ingested reference material
+    // belongs here, everything else has its own lifecycle.
+    if (document.status !== 'ARCHIVED' || document.origin !== 'BULK_INGESTED') {
+      return error(res, 'Only bulk-ingested archived documents can be filed through this endpoint')
+    }
+
+    const targetFile = await prisma.recordsFile.findUnique({ where: { id: recordsFileId } })
+    if (!targetFile) return notFound(res, 'Records file not found')
+    if (targetFile.status !== 'ACTIVE') {
+      return error(res, 'This records file is not active and cannot accept new filings')
+    }
+
+    const updated = await prisma.document.update({
+      where: { id: docId },
+      data: { recordsFileId },
+      select: {
+        id: true, title: true, category: true, department: true, status: true, origin: true,
+        recordsFileId: true, createdAt: true,
+        recordsFile: { select: { id: true, fileNumber: true, title: true } },
+      },
+    })
+
+    await logAudit({
+      userId: req.user.id,
+      action: 'ENTRY_ATTACHED_TO_FILE',
+      module: 'Records',
+      description: `Filed archived document "${document.title}" into ${targetFile.fileNumber}`,
+      ipAddress: req.ip,
+    })
+
+    return success(res, updated, 'Archived document attached to file')
   } catch (err) {
     return serverError(res, err)
   }

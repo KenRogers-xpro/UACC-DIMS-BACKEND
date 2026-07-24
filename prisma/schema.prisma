@@ -79,6 +79,12 @@ model Document {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  // RecordsFile.id is a String cuid, not an Int — recordsFileId follows
+  // the same type as RegistryEntry.recordsFileId / CirculationRecordsCopy.
+  // recordsFileId elsewhere in this schema, not Int.
+  recordsFileId String?
+  recordsFile   RecordsFile? @relation("ArchivedDocsInFile", fields: [recordsFileId], references: [id])
+
   annotations Annotation[]
   versions    DocumentVersion[]
   registryEntries RegistryEntry[]
@@ -223,6 +229,7 @@ model RecordsFile {
 
   entries       RegistryEntry[]
   filedCopies   CirculationRecordsCopy[]
+  archivedDocuments Document[] @relation("ArchivedDocsInFile")
 
   @@index([fileNumber])
 }

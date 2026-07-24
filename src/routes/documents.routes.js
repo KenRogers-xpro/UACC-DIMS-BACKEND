@@ -34,6 +34,10 @@ const DOCUMENT_SELECT = {
   fileSize: true, mimeType: true, description: true, status: true, origin: true,
   isEditable: true, uploadedBy: true, createdAt: true, updatedAt: true,
   uploader: { select: { id: true, name: true, role: true } },
+  // Only meaningful for ARCHIVED docs (the Documents page's Archive tab
+  // "In file: X" / "Unfiled" chip) — null for everything else.
+  recordsFileId: true,
+  recordsFile: { select: { fileNumber: true } },
 }
 
 // Builds a Prisma `where` fragment for the "state" tab filter on the
