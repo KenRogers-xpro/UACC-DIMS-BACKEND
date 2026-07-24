@@ -21,7 +21,7 @@ const router = Router()
 // matchUnansweredQueriesForDocument's own visibility check at match time).
 async function buildRagContext(messages, user) {
   const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
-  if (!lastUserMessage?.text?.trim()) return { context: '', topScore: 1, embedding: null, queryText: '', isUnanswerable: false }
+  if (!lastUserMessage?.text?.trim()) return { context: '', topScore: 1, embedding: null, queryText: '', isUnanswerable: false, hasOcrContent: false }
 
   const queryText = lastUserMessage.text.trim()
 
@@ -57,7 +57,13 @@ async function buildRagContext(messages, user) {
     // hands the model real documents and lets it judge relevance itself,
     // rather than being told up front to give up on a match it might
     // actually be able to use.
-    if (visible.length === 0) return { context: '', topScore, embedding, queryText, isUnanswerable: true }
+    if (visible.length === 0) return { context: '', topScore, embedding, queryText, isUnanswerable: true, hasOcrContent: false }
+
+    // Auditability, not user-visible: if any retrieved doc's body came from
+    // vision OCR rather than real text extraction, the system prompt gets a
+    // light accuracy disclaimer (see below) — honest and defensible without
+    // cluttering normal chat output.
+    const hasOcrContent = visible.some((doc) => doc.extractionMethod === 'vision_ocr')
 
     const entries = visible.map((doc) => {
       const header = `- [Document #${doc.id}] "${doc.title}" (${doc.category}, ${String(doc.department).replace(/_/g, ' ')})`
@@ -87,13 +93,13 @@ async function buildRagContext(messages, user) {
       entries,
     ].filter(Boolean).join('\n\n')
 
-    return { context, topScore, embedding, queryText, isUnanswerable: false }
+    return { context, topScore, embedding, queryText, isUnanswerable: false, hasOcrContent }
   } catch (err) {
     console.error('RAG retrieval failed, continuing without context:', err.message)
     // Retrieval itself throwing is the one case that still forces the
     // "couldn't find anything" branch — there's genuinely no context to
     // reason from here, unlike a merely low-scoring result above.
-    return { context: '', topScore: 0, embedding: null, queryText, isUnanswerable: true }
+    return { context: '', topScore: 0, embedding: null, queryText, isUnanswerable: true, hasOcrContent: false }
   }
 }
 
@@ -113,7 +119,7 @@ router.post('/', authenticate, async (req, res) => {
       return error(res, 'Gemini API key is not set', { diagnostics: getKeyDiagnostics() })
     }
 
-    const { context: ragContext, topScore, embedding, queryText, isUnanswerable } = await buildRagContext(messages, req.user)
+    const { context: ragContext, topScore, embedding, queryText, isUnanswerable, hasOcrContent } = await buildRagContext(messages, req.user)
 
     // Two different questions reuse the same retrieval result but must NOT
     // share one flag: isUnanswerable ("should the model be told to give up")
@@ -144,7 +150,8 @@ router.post('/', authenticate, async (req, res) => {
 You have access to a draftDocument tool. Use it only when the user has clearly and explicitly asked you to create, write, or draft a document that they intend to save — for example "draft a memo about X" or "write me a formal letter to Y". Do not call it in response to general help, questions, summaries, or discussions where the user hasn't asked for a saved document.
 
 When you do call the tool, state clearly in your reply that the result is a draft requiring human review before submission, and point the user to My Drafts. Never imply the document is finalized.${isUnanswerable ? `
-IMPORTANT: You could not find a good answer to the user's question in the available documents. Honestly tell them you couldn't find a strong match right now, and mention that you'll notify them if a relevant document is added later. Do not fabricate an answer or cite documents that weren't provided to you.` : ''}`
+IMPORTANT: You could not find a good answer to the user's question in the available documents. Honestly tell them you couldn't find a strong match right now, and mention that you'll notify them if a relevant document is added later. Do not fabricate an answer or cite documents that weren't provided to you.` : ''}${hasOcrContent ? `
+Some retrieved documents were transcribed via image OCR; minor transcription errors may be present. Do not treat exact numeric values or names from OCR'd documents as authoritative without confirmation.` : ''}`
 
     const augmentedMessages = [
       { role: 'system', text: systemPrompt },
